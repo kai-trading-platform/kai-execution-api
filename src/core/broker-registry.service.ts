@@ -1,0 +1,23 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Mt5BrokerAdapter } from '../adapters/mt5/mt5-broker.adapter';
+import type { BrokerAdapter } from './broker-adapter.interface';
+import type { BrokerProviderKey } from './types';
+
+@Injectable()
+export class BrokerRegistryService {
+  private readonly adapters: Map<BrokerProviderKey, BrokerAdapter>;
+
+  constructor(mt5BrokerAdapter: Mt5BrokerAdapter) {
+    this.adapters = new Map([[mt5BrokerAdapter.provider, mt5BrokerAdapter]]);
+  }
+
+  get(provider: BrokerProviderKey): BrokerAdapter {
+    const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new NotFoundException(
+        `Trading provider not registered: ${provider}`,
+      );
+    }
+    return adapter;
+  }
+}
