@@ -23,6 +23,7 @@ export interface BrokerAdapter {
   placeOrder(
     account: TradingAccountContext,
     request: PlaceOrderRequest,
+    idempotencyKey?: string,
   ): Promise<PlaceOrderResult>;
 
   closePosition(

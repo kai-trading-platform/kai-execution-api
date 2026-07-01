@@ -12,6 +12,7 @@ export interface ExecuteMarketOrderParams {
   magic?: number;
   requireStops?: boolean;
   allowStopFallback?: boolean;
+  idempotencyKey?: string;
 }
 
 export interface ExecuteMarketOrderResult {
@@ -58,7 +59,12 @@ export class Mt5BridgeClient {
     this.timeoutMs = 15000;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    extraHeaders?: Record<string, string>,
+  ): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -67,6 +73,7 @@ export class Mt5BridgeClient {
         headers: {
           'Content-Type': 'application/json',
           'X-API-Key': this.apiKey,
+          ...(extraHeaders ?? {}),
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
@@ -85,10 +92,14 @@ export class Mt5BridgeClient {
 
   async executeMarketOrder(params: ExecuteMarketOrderParams): Promise<ExecuteMarketOrderResult> {
     try {
+      const { idempotencyKey, ...orderParams } = params;
+      // The bridge exposes market order placement at POST /orders (the
+      // /orders/market alias isn't present on the deployed bridge build).
       const data = await this.request<{ ticket?: number; deal?: number; price?: number; sl?: number; tp?: number }>(
         'POST',
-        '/orders/market',
-        params,
+        '/orders',
+        orderParams,
+        idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
       );
       return { ok: true, data };
     } catch (error) {
@@ -113,10 +124,12 @@ export class Mt5BridgeClient {
 
   async closePosition(params: ClosePositionParams): Promise<ClosePositionResult> {
     try {
+      // The deployed bridge closes via DELETE /positions/{ticket} (optional
+      // {volume} body for partial closes); there is no POST .../close route.
       const data = await this.request<Record<string, unknown>>(
-        'POST',
-        `/positions/${params.ticket}/close`,
-        { volume: params.volume },
+        'DELETE',
+        `/positions/${params.ticket}`,
+        params.volume != null ? { volume: params.volume } : undefined,
       );
       return { ok: true, data };
     } catch (error) {

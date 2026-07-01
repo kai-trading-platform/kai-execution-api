@@ -1,12 +1,16 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { createHash } from 'node:crypto';
+
+import { PrismaService } from './common/prisma.service';
 import { BrokerRegistryService } from './core/broker-registry.service';
 import type {
   ClosePositionRequest,
@@ -20,8 +24,12 @@ import type {
 import { QueryService } from './query.service';
 import { RiskGuardClient } from './risk-guard.client';
 
-const REAL_EXECUTION_CONFIRMATION = 'EJECUTAR DEMO';
-const DEMO_REAL_MAX_VOLUME = 0.01;
+// Confirmation token both UIs must send — only after the user confirms (exec-ui
+// AlertDialog) or types it (kai-frontend) — before any real (dryRun:false)
+// order/close/stop executes. Value kept as the existing shared phrase so both
+// frontends pass without a coordinated rename (the "DEMO" wording is legacy and
+// can be renamed later in lockstep across both UIs).
+const REQUIRED_CONFIRMATION_TEXT = 'EJECUTAR DEMO';
 
 @Injectable()
 export class ExecutionService {
@@ -31,14 +39,41 @@ export class ExecutionService {
     private readonly query: QueryService,
     private readonly brokerRegistry: BrokerRegistryService,
     private readonly riskGuard: RiskGuardClient,
-    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
+
+  /**
+   * Enforce the confirmation gate for real operations. Previously the backend
+   * parsed confirmationText but never checked it, so dryRun:false executed with
+   * no effective confirmation. Dry-runs are exempt (they never execute).
+   */
+  private assertRealConfirmation(req: {
+    dryRun?: boolean;
+    confirmationText?: string | null;
+  }): void {
+    if (req.dryRun === true) return;
+    if ((req.confirmationText ?? '').trim() !== REQUIRED_CONFIRMATION_TEXT) {
+      throw new BadRequestException(
+        'Confirmación requerida para ejecutar una operación real',
+      );
+    }
+  }
 
   async placeOrder(
     userId: string,
     payload: unknown,
+    idempotencyKey?: string,
   ): Promise<PlaceOrderResult> {
     const request = this.parsePlaceOrderRequest(payload);
+    this.assertRealConfirmation(request);
+    const normalizedKey = (idempotencyKey ?? '').trim();
+
+    // Real (non-dry-run) orders MUST carry an idempotency key so a client retry
+    // after a timeout cannot place a second order. Dry-runs don't execute, so
+    // they are exempt.
+    if (request.dryRun !== true && !normalizedKey) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
     const account = await this.query.getOwnedAccountContext(
       userId,
       request.tradingAccountId,
@@ -99,25 +134,36 @@ export class ExecutionService {
       return result;
     }
 
-    this.assertRealExecutionAllowed(account, request.confirmationText);
-    if (request.volume > DEMO_REAL_MAX_VOLUME) {
-      this.auditExecution({
-        userId,
-        tradingAccountId: account.id,
-        provider: account.provider,
-        action: 'open_order',
-        dryRun: false,
-        symbol: request.symbol,
-        success: false,
-        message: `volume must be <= ${DEMO_REAL_MAX_VOLUME} for demo real execution`,
-      });
-      throw new BadRequestException(
-        `volume must be <= ${DEMO_REAL_MAX_VOLUME} for demo real execution`,
-      );
+    // Atomically claim the idempotency key. A retry with the same key either
+    // replays the stored result or is rejected as in-progress — never executes twice.
+    const requestHash = this.hashOrderRequest(account.id, request);
+    const claim = await this.claimIdempotency(
+      normalizedKey,
+      userId,
+      account.id,
+      requestHash,
+    );
+    if (claim.replay) {
+      return claim.response;
     }
 
-    const result = await adapter.placeOrder(account, request);
+    let result: PlaceOrderResult;
+    try {
+      result = await adapter.placeOrder(account, request, normalizedKey);
+    } catch (error) {
+      // AMBIGUOUS failure: a thrown error (network timeout, dropped connection
+      // mid-send) means the order MAY already have reached the broker. We must
+      // NOT mark the key FAILED, because that would let a retry re-send it under
+      // the same key → DOUBLE execution. Instead we leave the key CLAIMED
+      // (IN_PROGRESS) so any retry is rejected: the client must reconcile (check
+      // open positions/orders) and, if needed, place a new order with a NEW key.
+      // Only CLEAN broker rejections (result.ok === false, below) are marked
+      // FAILED to allow a safe retry — there the order provably did not execute.
+      throw error;
+    }
+
     if (!result.ok) {
+      await this.markIdempotencyFailed(normalizedKey);
       this.auditExecution({
         userId,
         tradingAccountId: account.id,
@@ -131,6 +177,7 @@ export class ExecutionService {
       throw new BadRequestException(result.message || 'Order execution failed');
     }
 
+    await this.markIdempotencyCompleted(normalizedKey, result);
     await this.riskGuard.recordTradeExecuted(userId, account.id);
     this.auditExecution({
       userId,
@@ -145,12 +192,103 @@ export class ExecutionService {
     return result;
   }
 
+  private hashOrderRequest(
+    accountId: string,
+    request: PlaceOrderRequest,
+  ): string {
+    const fingerprint = [
+      accountId,
+      request.symbol,
+      request.side,
+      request.volume,
+      request.stopLoss ?? '',
+      request.takeProfit ?? '',
+    ].join('|');
+    return createHash('sha256').update(fingerprint).digest('hex');
+  }
+
+  private async claimIdempotency(
+    key: string,
+    userId: string,
+    tradingAccountId: string,
+    requestHash: string,
+  ): Promise<{ replay: false } | { replay: true; response: PlaceOrderResult }> {
+    try {
+      await this.prisma.orderIdempotency.create({
+        data: { key, userId, tradingAccountId, requestHash, status: 'IN_PROGRESS' },
+      });
+      return { replay: false };
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') {
+        throw error;
+      }
+    }
+
+    // Key already exists — decide based on its current state.
+    const existing = await this.prisma.orderIdempotency.findUnique({
+      where: { key },
+    });
+    if (!existing) {
+      // Row vanished between conflict and read (rare) — treat as a fresh claim.
+      return { replay: false };
+    }
+    if (existing.requestHash !== requestHash) {
+      throw new UnprocessableEntityException(
+        'Idempotency-Key was reused with a different order payload',
+      );
+    }
+    if (existing.status === 'COMPLETED') {
+      return {
+        replay: true,
+        response: existing.responseJson as unknown as PlaceOrderResult,
+      };
+    }
+    if (existing.status === 'IN_PROGRESS') {
+      // Either a concurrent request is genuinely in flight, OR a prior attempt
+      // failed ambiguously (the order may have reached the broker). In both
+      // cases retrying under the same key is unsafe — block it. The client must
+      // verify whether the order was placed and use a NEW key to retry.
+      throw new ConflictException(
+        'This Idempotency-Key is already claimed (request in flight or a prior attempt failed ambiguously). Verify whether the order was placed; retry only with a new Idempotency-Key.',
+      );
+    }
+    // FAILED — allow a retry by reclaiming the key.
+    await this.prisma.orderIdempotency.update({
+      where: { key },
+      data: { status: 'IN_PROGRESS', requestHash },
+    });
+    return { replay: false };
+  }
+
+  private async markIdempotencyCompleted(
+    key: string,
+    result: PlaceOrderResult,
+  ): Promise<void> {
+    if (!key) return;
+    await this.prisma.orderIdempotency.update({
+      where: { key },
+      data: {
+        status: 'COMPLETED',
+        responseJson: result as unknown as object,
+        orderId: result.orderId ?? null,
+      },
+    });
+  }
+
+  private async markIdempotencyFailed(key: string): Promise<void> {
+    if (!key) return;
+    await this.prisma.orderIdempotency
+      .update({ where: { key }, data: { status: 'FAILED' } })
+      .catch(() => undefined);
+  }
+
   async closePosition(
     userId: string,
     ticket: string,
     payload: unknown,
   ): Promise<ClosePositionResult> {
     const request = this.parseClosePositionRequest(ticket, payload);
+    this.assertRealConfirmation(request);
     const account = await this.query.getOwnedAccountContext(
       userId,
       request.tradingAccountId,
@@ -208,10 +346,6 @@ export class ExecutionService {
       );
     }
 
-    if (request.dryRun !== true) {
-      this.assertRealExecutionAllowed(account, request.confirmationText);
-    }
-
     const result = await adapter.closePosition(account, request);
     if (!result.success) {
       this.auditExecution({
@@ -260,6 +394,7 @@ export class ExecutionService {
     payload: unknown,
   ): Promise<UpdatePositionStopsResult> {
     const request = this.parseUpdatePositionStopsRequest(ticket, payload);
+    this.assertRealConfirmation(request);
     const account = await this.query.getOwnedAccountContext(
       userId,
       request.tradingAccountId,
@@ -315,10 +450,6 @@ export class ExecutionService {
       throw new ForbiddenException(
         riskCheck.reason || 'RiskGuard blocked this operation',
       );
-    }
-
-    if (request.dryRun !== true) {
-      this.assertRealExecutionAllowed(account, request.confirmationText);
     }
 
     const result = await adapter.updatePositionStops(account, request);
@@ -403,9 +534,6 @@ export class ExecutionService {
     }
     if (!Number.isFinite(volume) || volume <= 0) {
       throw new BadRequestException('volume must be greater than 0');
-    }
-    if (stopLoss === null || takeProfit === null) {
-      throw new BadRequestException('stopLoss and takeProfit are required');
     }
     if (magic !== null && (!Number.isFinite(magic) || magic < 0)) {
       throw new BadRequestException('magic must be a non-negative number');
@@ -516,46 +644,6 @@ export class ExecutionService {
           ? null
           : String(body.confirmationText),
     };
-  }
-
-  private assertRealExecutionAllowed(
-    account: TradingAccountContext,
-    confirmationText?: string | null,
-  ): void {
-    if (!this.isRealExecutionEnabled()) {
-      throw new ForbiddenException('Real trading execution is disabled');
-    }
-
-    if (!this.isDemoAccount(account)) {
-      throw new ForbiddenException(
-        'Real trading is only allowed for demo accounts in this phase.',
-      );
-    }
-
-    if (confirmationText !== REAL_EXECUTION_CONFIRMATION) {
-      throw new BadRequestException(
-        `confirmationText must be ${REAL_EXECUTION_CONFIRMATION}`,
-      );
-    }
-  }
-
-  private isRealExecutionEnabled(): boolean {
-    return (
-      this.configService.get<boolean>('TRADING_REAL_EXECUTION_ENABLED') === true ||
-      this.configService.get<string>('TRADING_REAL_EXECUTION_ENABLED') === 'true'
-    );
-  }
-
-  private isDemoAccount(account: TradingAccountContext): boolean {
-    const accountType = account.accountType.toLowerCase();
-    const server = String(account.server || '').toLowerCase();
-    return (
-      accountType === 'demo' ||
-      accountType === 'sandbox' ||
-      server.includes('demo') ||
-      server.includes('trial') ||
-      server.includes('sandbox')
-    );
   }
 
   private auditExecution(event: {

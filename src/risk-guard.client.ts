@@ -17,7 +17,7 @@ export class RiskGuardClient {
 
   constructor(configService: ConfigService) {
     this.baseUrl = (configService.get<string>('KAI_BACKEND_INTERNAL_URL') || 'http://localhost:3000').replace(/\/$/, '');
-    this.apiKey = configService.get<string>('KAI_BACKEND_INTERNAL_API_KEY') || '';
+    this.apiKey = configService.get<string>('CRON_SECRET') || '';
     this.timeoutMs = 10000;
   }
 
@@ -29,7 +29,7 @@ export class RiskGuardClient {
         method,
         headers: {
           'Content-Type': 'application/json',
-          'X-Internal-API-Key': this.apiKey,
+          'x-cron-secret': this.apiKey,
         },
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,

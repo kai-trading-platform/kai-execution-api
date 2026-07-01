@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -38,9 +39,10 @@ export class ExecutionController {
   @Post('orders')
   placeOrder(
     @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() body: unknown,
   ) {
-    return this.execution.placeOrder(this.getUserId(req), body);
+    return this.execution.placeOrder(this.getUserId(req), body, idempotencyKey);
   }
 
   @Post('positions/:ticket/close')
