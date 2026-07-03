@@ -7,11 +7,20 @@ import {
 import { PrismaService } from './common/prisma.service';
 import { BrokerRegistryService } from './core/broker-registry.service';
 import type {
+  BrokerCapabilities,
   BrokerProviderKey,
   ConnectedTradingAccount,
   TradingAccountContext,
   TradingPosition,
 } from './core/types';
+
+const DISABLED_CAPABILITIES: BrokerCapabilities = {
+  listAccounts: false,
+  listPositions: false,
+  placeMarketOrder: false,
+  closePosition: false,
+  updateStops: false,
+};
 
 @Injectable()
 export class QueryService {
@@ -26,9 +35,33 @@ export class QueryService {
       orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
     });
 
+    // The trading-account row carries its own provider routing ('mt5' | 'rithmic').
+    // The generated Prisma client can lag behind the shared schema, so read the
+    // `provider` column via a scoped raw query and stamp each account with it.
+    // MT5 rows keep provider 'mt5' (unchanged); Rithmic rows surface as futures.
+    const providerById = await this.getProviderMap(userId);
+
     return accounts.map((account: any) =>
-      this.toConnectedAccount(this.toTradingAccountContext(account)),
+      this.toConnectedAccount(
+        this.toTradingAccountContext(
+          account,
+          this.normalizeProvider(providerById.get(String(account.id))),
+        ),
+      ),
     );
+  }
+
+  private async getProviderMap(
+    userId: string,
+  ): Promise<Map<string, string>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: string; provider: string }>
+    >`SELECT id, provider FROM mt5_accounts WHERE user_id = ${userId}::uuid`;
+    return new Map(rows.map((row) => [String(row.id), row.provider]));
+  }
+
+  private normalizeProvider(value: unknown): BrokerProviderKey {
+    return value === 'rithmic' ? 'rithmic' : 'mt5';
   }
 
   async listPositions(
@@ -70,8 +103,6 @@ export class QueryService {
   }
 
   toConnectedAccount(account: TradingAccountContext): ConnectedTradingAccount {
-    const adapter = this.brokerRegistry.get(account.provider);
-    const isConnected = account.status.toLowerCase() === 'connected';
     return {
       id: account.id,
       provider: account.provider,
@@ -83,20 +114,38 @@ export class QueryService {
       isDefault: account.isDefault,
       balance: account.balance,
       equity: account.equity,
-      capabilities: {
-        ...adapter.capabilities,
-        placeMarketOrder: adapter.capabilities.placeMarketOrder && isConnected,
-        closePosition: adapter.capabilities.closePosition && isConnected,
-        updateStops: adapter.capabilities.updateStops && isConnected,
-      },
+      capabilities: this.resolveCapabilities(account),
     };
   }
 
-  private toTradingAccountContext(account: any): TradingAccountContext {
+  private resolveCapabilities(
+    account: TradingAccountContext,
+  ): BrokerCapabilities {
+    // Providers without a registered adapter (e.g. Rithmic in Phase 1) are
+    // listable but not yet interactive: expose them read-only until their
+    // adapter lands. This keeps the account visible in the terminal without
+    // enabling trading actions the backend can't service yet.
+    if (!this.brokerRegistry.has(account.provider)) {
+      return { ...DISABLED_CAPABILITIES };
+    }
+    const adapter = this.brokerRegistry.get(account.provider);
+    const isConnected = account.status.toLowerCase() === 'connected';
+    return {
+      ...adapter.capabilities,
+      placeMarketOrder: adapter.capabilities.placeMarketOrder && isConnected,
+      closePosition: adapter.capabilities.closePosition && isConnected,
+      updateStops: adapter.capabilities.updateStops && isConnected,
+    };
+  }
+
+  private toTradingAccountContext(
+    account: any,
+    provider: BrokerProviderKey = 'mt5',
+  ): TradingAccountContext {
     return {
       id: account.id,
       userId: account.userId,
-      provider: 'mt5' satisfies BrokerProviderKey,
+      provider,
       providerAccountId: String(account.mt5AccountId),
       name: String(account.accountName || account.mt5AccountId),
       server: account.server ?? null,

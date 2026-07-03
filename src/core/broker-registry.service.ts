@@ -11,6 +11,10 @@ export class BrokerRegistryService {
     this.adapters = new Map([[mt5BrokerAdapter.provider, mt5BrokerAdapter]]);
   }
 
+  has(provider: BrokerProviderKey): boolean {
+    return this.adapters.has(provider);
+  }
+
   get(provider: BrokerProviderKey): BrokerAdapter {
     const adapter = this.adapters.get(provider);
     if (!adapter) {

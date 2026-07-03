@@ -1,4 +1,4 @@
-export type BrokerProviderKey = 'mt5';
+export type BrokerProviderKey = 'mt5' | 'rithmic';
 
 export type TradingOrderSide = 'buy' | 'sell';
 
