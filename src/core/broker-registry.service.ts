@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Mt5BrokerAdapter } from '../adapters/mt5/mt5-broker.adapter';
+import { RithmicBrokerAdapter } from '../adapters/rithmic/rithmic-broker.adapter';
 import type { BrokerAdapter } from './broker-adapter.interface';
 import type { BrokerProviderKey } from './types';
 
@@ -7,8 +8,14 @@ import type { BrokerProviderKey } from './types';
 export class BrokerRegistryService {
   private readonly adapters: Map<BrokerProviderKey, BrokerAdapter>;
 
-  constructor(mt5BrokerAdapter: Mt5BrokerAdapter) {
-    this.adapters = new Map([[mt5BrokerAdapter.provider, mt5BrokerAdapter]]);
+  constructor(
+    mt5BrokerAdapter: Mt5BrokerAdapter,
+    rithmicBrokerAdapter: RithmicBrokerAdapter,
+  ) {
+    this.adapters = new Map<BrokerProviderKey, BrokerAdapter>([
+      [mt5BrokerAdapter.provider, mt5BrokerAdapter],
+      [rithmicBrokerAdapter.provider, rithmicBrokerAdapter],
+    ]);
   }
 
   has(provider: BrokerProviderKey): boolean {

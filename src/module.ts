@@ -10,6 +10,8 @@ import { ExecutionController } from './controller';
 import { ExecutionService } from './execution.service';
 import { QueryService } from './query.service';
 import { Mt5BrokerAdapter } from './adapters/mt5/mt5-broker.adapter';
+import { RithmicBrokerAdapter } from './adapters/rithmic/rithmic-broker.adapter';
+import { KaiBackendRithmicClient } from './adapters/rithmic/kai-backend.client';
 import { BrokerRegistryService } from './core/broker-registry.service';
 
 @Module({
@@ -27,6 +29,8 @@ import { BrokerRegistryService } from './core/broker-registry.service';
     ExecutionService,
     QueryService,
     Mt5BrokerAdapter,
+    KaiBackendRithmicClient,
+    RithmicBrokerAdapter,
     BrokerRegistryService,
   ],
   exports: [ExecutionService, QueryService],

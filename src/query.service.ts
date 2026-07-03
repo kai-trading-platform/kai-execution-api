@@ -60,6 +60,25 @@ export class QueryService {
     return new Map(rows.map((row) => [String(row.id), row.provider]));
   }
 
+  /**
+   * Resolve a single account's provider routing. Like {@link getProviderMap},
+   * this reads the `provider` column via a scoped raw query because the generated
+   * Prisma client can lag behind the shared schema (so `account.provider` from a
+   * typed `findFirst` is undefined). Scoped to the owning user. Without this,
+   * getOwnedAccountContext defaulted every account to 'mt5' and a Rithmic account
+   * would misroute its positions/actions to the MT5 adapter.
+   */
+  private async getProviderForAccount(
+    userId: string,
+    accountId: string,
+  ): Promise<BrokerProviderKey> {
+    const rows = await this.prisma.$queryRaw<Array<{ provider: string }>>`
+      SELECT provider FROM mt5_accounts
+      WHERE id = ${accountId}::uuid AND user_id = ${userId}::uuid
+      LIMIT 1`;
+    return this.normalizeProvider(rows[0]?.provider);
+  }
+
   private normalizeProvider(value: unknown): BrokerProviderKey {
     return value === 'rithmic' ? 'rithmic' : 'mt5';
   }
@@ -99,7 +118,8 @@ export class QueryService {
       throw new NotFoundException('Trading account not found');
     }
 
-    return this.toTradingAccountContext(account);
+    const provider = await this.getProviderForAccount(userId, tradingAccountId);
+    return this.toTradingAccountContext(account, provider);
   }
 
   toConnectedAccount(account: TradingAccountContext): ConnectedTradingAccount {

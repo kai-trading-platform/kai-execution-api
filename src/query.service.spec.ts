@@ -160,3 +160,54 @@ describe('QueryService.listAccounts', () => {
     expect(rawArgs).toEqual(expect.arrayContaining([USER_ID]));
   });
 });
+
+describe('QueryService.listPositions routing', () => {
+  const USER_ID = 'user-1';
+
+  function makeService(provider: string) {
+    const listPositions = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      mt5Account: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(buildRow({ id: 'acc-1', mt5AccountId: 'APEX-1' })),
+      },
+      // getProviderForAccount reads the provider column via a scoped raw query.
+      $queryRaw: jest.fn().mockResolvedValue([{ provider }]),
+    };
+    const adapter = {
+      provider,
+      capabilities: MT5_CAPABILITIES,
+      supports: jest.fn((cap: string) => cap === 'list_positions'),
+      listPositions,
+    };
+    const brokerRegistry = {
+      has: jest.fn(() => true),
+      get: jest.fn(() => adapter),
+    };
+    const service = new QueryService(prisma as never, brokerRegistry as never);
+    return { service, prisma, brokerRegistry, adapter, listPositions };
+  }
+
+  it('routes a Rithmic account to the rithmic adapter (not mt5)', async () => {
+    const { service, brokerRegistry, listPositions } = makeService('rithmic');
+
+    await service.listPositions(USER_ID, 'acc-1');
+
+    // The load-bearing fix: getOwnedAccountContext must resolve the real
+    // provider, so the registry is asked for 'rithmic', never 'mt5'.
+    expect(brokerRegistry.get).toHaveBeenCalledWith('rithmic');
+    const ctx = listPositions.mock.calls[0][0];
+    expect(ctx.provider).toBe('rithmic');
+    expect(ctx.providerAccountId).toBe('APEX-1');
+  });
+
+  it('still routes an MT5 account to the mt5 adapter', async () => {
+    const { service, brokerRegistry, listPositions } = makeService('mt5');
+
+    await service.listPositions(USER_ID, 'acc-1');
+
+    expect(brokerRegistry.get).toHaveBeenCalledWith('mt5');
+    expect(listPositions.mock.calls[0][0].provider).toBe('mt5');
+  });
+});
