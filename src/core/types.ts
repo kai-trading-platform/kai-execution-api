@@ -58,6 +58,14 @@ export interface PlaceOrderRequest {
   volume: number;
   stopLoss?: number | null;
   takeProfit?: number | null;
+  /**
+   * Reference/entry price (absolute). MT5 ignores it (the bridge takes absolute
+   * SL/TP directly). Rithmic needs it to convert the absolute SL/TP into the
+   * tick-distance bracket the futures bridge expects — without it the futures
+   * SL/TP would be misread. Optional; the frontend does not send it yet (see the
+   * Phase 5 pre-enable review list).
+   */
+  entry?: number | null;
   comment?: string | null;
   magic?: number | null;
   dryRun?: boolean;

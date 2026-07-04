@@ -57,4 +57,71 @@ export class KaiBackendRithmicClient {
       clearTimeout(timer);
     }
   }
+
+  /**
+   * Shared POST helper for the internal WRITE endpoints. Reuses the same
+   * x-cron-secret channel. Throws on transport/HTTP failure so an ambiguous
+   * write surfaces loudly (the caller never assumes success on error).
+   */
+  private async post(path: string, body: unknown): Promise<unknown> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-cron-secret': this.apiKey,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(
+          `kai-backend POST ${path} failed: ${response.status} ${text}`,
+        );
+      }
+      return await response.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Place a MANUAL Rithmic market order (with optional SL/TP bracket). The Apex
+   * `maxContracts` cap is applied server-side; the response echoes the clamped
+   * volume. `account` is the Kai trading-account UUID.
+   */
+  async placeOrder(payload: {
+    account: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    volume: number;
+    sl?: number | null;
+    tp?: number | null;
+    entry?: number | null;
+    comment?: string | null;
+  }): Promise<unknown> {
+    return this.post('/internal/rithmic/orders', payload);
+  }
+
+  /** Close (flatten) a Rithmic position by symbol. */
+  async closePosition(payload: {
+    account: string;
+    symbol: string;
+  }): Promise<unknown> {
+    return this.post('/internal/rithmic/positions/close', payload);
+  }
+
+  /** Modify a Rithmic position's SL/TP bracket (absolute prices) by symbol. */
+  async modifyStops(payload: {
+    account: string;
+    symbol: string;
+    sl?: number | null;
+    tp?: number | null;
+    volume?: number | null;
+  }): Promise<unknown> {
+    return this.post('/internal/rithmic/positions/bracket', payload);
+  }
 }

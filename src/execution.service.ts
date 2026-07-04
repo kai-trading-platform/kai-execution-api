@@ -515,6 +515,10 @@ export class ExecutionService {
     const volume = Number(body.volume);
     const stopLoss = this.optionalPositiveNumber(body.stopLoss);
     const takeProfit = this.optionalPositiveNumber(body.takeProfit);
+    // Optional reference/entry price. MT5 ignores it; Rithmic uses it to convert
+    // absolute SL/TP into the bridge's tick-distance bracket. Additive + null by
+    // default, so the MT5 path is unaffected.
+    const entry = this.optionalPositiveNumber(body.entry);
     const magic =
       body.magic === null || body.magic === undefined || body.magic === ''
         ? null
@@ -550,6 +554,7 @@ export class ExecutionService {
       volume,
       stopLoss,
       takeProfit,
+      entry,
       comment:
         body.comment === null || body.comment === undefined
           ? null

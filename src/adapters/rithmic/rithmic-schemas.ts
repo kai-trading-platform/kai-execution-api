@@ -30,3 +30,26 @@ export const rithmicPositionsResponseSchema = z.object({
 });
 
 export type RithmicPositionRaw = z.infer<typeof rithmicPositionSchema>;
+
+/**
+ * Response envelope for the internal WRITE endpoints. `ok` is the bridge outcome
+ * (a clean broker rejection is `ok:false` with a `message`). Place additionally
+ * echoes the server-side clamped volume so the caller can surface the Apex cap.
+ */
+export const rithmicPlaceOrderResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    orderId: z.union([z.string(), z.number()]).nullish(),
+    requestedVolume: z.number().optional(),
+    volume: z.number().optional(),
+    capApplied: z.boolean().optional(),
+    message: z.string().optional(),
+  })
+  .passthrough();
+
+export const rithmicWriteResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    message: z.string().optional(),
+  })
+  .passthrough();
