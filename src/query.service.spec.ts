@@ -39,12 +39,27 @@ describe('QueryService.listAccounts', () => {
   function makeService(options: {
     rows: Array<Record<string, unknown>>;
     providerRows: Array<{ id: string; provider: string }>;
+    // Rows returned by the second $queryRaw call (getMaxContractsMap's
+    // `system_configs` lookup). Defaults to none (no cap configured for
+    // any account) so existing tests that don't care about caps keep
+    // asserting on an unchanged MT5/Rithmic shape.
+    configRows?: Array<{ key: string; value: unknown }>;
   }) {
+    let queryRawCallCount = 0;
     const prisma = {
       mt5Account: {
         findMany: jest.fn().mockResolvedValue(options.rows),
       },
-      $queryRaw: jest.fn().mockResolvedValue(options.providerRows),
+      // getProviderMap is always called first in listAccounts, followed by
+      // getMaxContractsMap — mirror that ordering so each raw query gets its
+      // own canned rows instead of both reading the same mocked value.
+      $queryRaw: jest.fn(() => {
+        queryRawCallCount += 1;
+        if (queryRawCallCount === 1) {
+          return Promise.resolve(options.providerRows);
+        }
+        return Promise.resolve(options.configRows ?? []);
+      }),
     };
     const brokerRegistry = {
       has: jest.fn((provider: string) => provider === 'mt5'),
@@ -158,6 +173,88 @@ describe('QueryService.listAccounts', () => {
     // Raw provider query is parameterized with the same userId (tagged template).
     const rawArgs = prisma.$queryRaw.mock.calls[0];
     expect(rawArgs).toEqual(expect.arrayContaining([USER_ID]));
+  });
+
+  it('stamps maxContracts when a system_configs cap key exists for the account UUID', async () => {
+    const { service } = makeService({
+      rows: [buildRow({ id: 'acc-mt5' })],
+      providerRows: [{ id: 'acc-mt5', provider: 'mt5' }],
+      configRows: [{ key: 'autotrading:maxContracts:acc-mt5', value: '1' }],
+    });
+
+    const [account] = await service.listAccounts(USER_ID);
+
+    expect(account.maxContracts).toBe(1);
+  });
+
+  it('falls back to the broker login/ref key when the UUID key is absent', async () => {
+    const { service } = makeService({
+      rows: [buildRow({ id: 'acc-rithmic', mt5AccountId: 'APEX-1' })],
+      providerRows: [{ id: 'acc-rithmic', provider: 'rithmic' }],
+      configRows: [{ key: 'autotrading:maxContracts:APEX-1', value: '2' }],
+    });
+
+    const [account] = await service.listAccounts(USER_ID);
+
+    expect(account.maxContracts).toBe(2);
+  });
+
+  it('prefers the account UUID cap key over the broker login/ref key', async () => {
+    const { service } = makeService({
+      rows: [buildRow({ id: 'acc-rithmic', mt5AccountId: 'APEX-1' })],
+      providerRows: [{ id: 'acc-rithmic', provider: 'rithmic' }],
+      configRows: [
+        { key: 'autotrading:maxContracts:acc-rithmic', value: '1' },
+        { key: 'autotrading:maxContracts:APEX-1', value: '5' },
+      ],
+    });
+
+    const [account] = await service.listAccounts(USER_ID);
+
+    expect(account.maxContracts).toBe(1);
+  });
+
+  it('leaves maxContracts undefined (no cap) and the MT5 shape otherwise unchanged when no cap key exists', async () => {
+    const { service } = makeService({
+      rows: [buildRow({ id: 'acc-mt5' })],
+      providerRows: [{ id: 'acc-mt5', provider: 'mt5' }],
+      configRows: [],
+    });
+
+    const [account] = await service.listAccounts(USER_ID);
+
+    expect(account.maxContracts).toBeUndefined();
+    expect(account).toEqual({
+      id: 'acc-mt5',
+      provider: 'mt5',
+      providerAccountId: '500123',
+      name: 'Demo CFD',
+      server: 'MetaQuotes-Demo',
+      status: 'connected',
+      accountType: 'demo',
+      isDefault: true,
+      balance: 10000,
+      equity: 10250,
+      capabilities: {
+        listAccounts: true,
+        listPositions: true,
+        placeMarketOrder: true,
+        closePosition: true,
+        updateStops: true,
+      },
+    });
+  });
+
+  it('ignores a non-positive or unparseable cap value (treated as no cap)', async () => {
+    const { service } = makeService({
+      rows: [buildRow({ id: 'acc-mt5' })],
+      providerRows: [{ id: 'acc-mt5', provider: 'mt5' }],
+      configRows: [{ key: 'autotrading:maxContracts:acc-mt5', value: '0' }],
+    });
+
+    const [account] = await service.listAccounts(USER_ID);
+
+    expect(account.maxContracts).toBeUndefined();
   });
 });
 

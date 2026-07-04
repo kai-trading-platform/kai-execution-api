@@ -30,6 +30,15 @@ export interface ConnectedTradingAccount {
   isDefault: boolean;
   balance: number | null;
   equity: number | null;
+  /**
+   * Per-account contracts cap sourced from `system_configs` key
+   * `autotrading:maxContracts:<accountId>` (matched by account UUID, falling
+   * back to the broker login/ref). Undefined when unset/<=0 — "no cap".
+   * Mirrors the same cap the backend auto-trading processor and the manual
+   * Rithmic execution path enforce server-side; this is display-only so the
+   * terminal's futures cap badge can show it ahead of an order being placed.
+   */
+  maxContracts?: number;
   capabilities: BrokerCapabilities;
 }
 
@@ -142,4 +151,5 @@ export interface TradingAccountContext {
   bridgeInstance: number | null;
   customComment: string | null;
   customMagicNumber: number | null;
+  maxContracts?: number;
 }
