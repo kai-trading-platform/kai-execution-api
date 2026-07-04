@@ -53,3 +53,17 @@ export const rithmicWriteResponseSchema = z
     message: z.string().optional(),
   })
   .passthrough();
+
+/**
+ * REVERSE response. Like the write envelope but also echoes the server-side
+ * clamped re-entry volume so the caller can surface the Apex cap on the flip.
+ */
+export const rithmicReverseResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    capApplied: z.boolean().optional(),
+    requestedVolume: z.number().optional(),
+    volume: z.number().optional(),
+    message: z.string().optional(),
+  })
+  .passthrough();

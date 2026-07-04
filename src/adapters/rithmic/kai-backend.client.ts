@@ -63,7 +63,11 @@ export class KaiBackendRithmicClient {
    * x-cron-secret channel. Throws on transport/HTTP failure so an ambiguous
    * write surfaces loudly (the caller never assumes success on error).
    */
-  private async post(path: string, body: unknown): Promise<unknown> {
+  private async post(
+    path: string,
+    body: unknown,
+    idempotencyKey?: string,
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -72,6 +76,7 @@ export class KaiBackendRithmicClient {
         headers: {
           'Content-Type': 'application/json',
           'x-cron-secret': this.apiKey,
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
         },
         body: JSON.stringify(body),
         signal: controller.signal,
@@ -123,5 +128,51 @@ export class KaiBackendRithmicClient {
     volume?: number | null;
   }): Promise<unknown> {
     return this.post('/internal/rithmic/positions/bracket', payload);
+  }
+
+  /** FLATTEN ALL: close all positions AND cancel all working orders on an account. */
+  async flattenAll(
+    payload: { account: string },
+    idempotencyKey?: string,
+  ): Promise<unknown> {
+    return this.post(
+      '/internal/rithmic/positions/close-all',
+      payload,
+      idempotencyKey,
+    );
+  }
+
+  /** CANCEL ALL: cancel all working orders (positions untouched) on an account. */
+  async cancelAllOrders(
+    payload: { account: string },
+    idempotencyKey?: string,
+  ): Promise<unknown> {
+    return this.post(
+      '/internal/rithmic/orders/cancel-all',
+      payload,
+      idempotencyKey,
+    );
+  }
+
+  /**
+   * REVERSE (flip) a Rithmic position by symbol. The maxContracts clamp and the
+   * fail-closed per-trade risk gate are applied server-side; the response echoes
+   * the clamped re-entry volume.
+   */
+  async reversePosition(
+    payload: {
+      account: string;
+      symbol: string;
+      sl?: number | null;
+      tp?: number | null;
+      entry?: number | null;
+    },
+    idempotencyKey?: string,
+  ): Promise<unknown> {
+    return this.post(
+      '/internal/rithmic/positions/reverse',
+      payload,
+      idempotencyKey,
+    );
   }
 }

@@ -58,6 +58,47 @@ export class ExecutionController {
     );
   }
 
+  @Post('positions/close-all')
+  flattenAllPositions(
+    @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.execution.flattenAllPositions(
+      this.getUserId(req),
+      body,
+      idempotencyKey,
+    );
+  }
+
+  @Post('orders/cancel-all')
+  cancelAllOrders(
+    @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Body() body: unknown,
+  ) {
+    return this.execution.cancelAllOrders(
+      this.getUserId(req),
+      body,
+      idempotencyKey,
+    );
+  }
+
+  @Post('positions/:ticket/reverse')
+  reversePosition(
+    @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Param('ticket') ticket: string,
+    @Body() body: unknown,
+  ) {
+    return this.execution.reversePosition(
+      this.getUserId(req),
+      ticket,
+      body,
+      idempotencyKey,
+    );
+  }
+
   @Patch('positions/:ticket/stops')
   updatePositionStops(
     @Req() req: Request & { user?: { sub?: string; id?: string } },

@@ -9,7 +9,10 @@ export type BrokerCapability =
   | 'list_positions'
   | 'place_market_order'
   | 'close_position'
-  | 'update_position_stops';
+  | 'update_position_stops'
+  | 'flatten_all'
+  | 'cancel_all_orders'
+  | 'reverse_position';
 
 export interface BrokerCapabilities {
   listAccounts: boolean;
@@ -17,6 +20,14 @@ export interface BrokerCapabilities {
   placeMarketOrder: boolean;
   closePosition: boolean;
   updateStops: boolean;
+  /**
+   * Futures-terminal bulk/flip actions (Rithmic only). Optional: providers that
+   * don't implement them omit the flag (treated as false). Gated by the same
+   * RITHMIC_TERMINAL_ORDERS_ENABLED kill-switch as the other Rithmic writes.
+   */
+  flattenAll?: boolean;
+  cancelAllOrders?: boolean;
+  reversePosition?: boolean;
 }
 
 export interface ConnectedTradingAccount {
@@ -124,6 +135,61 @@ export interface UpdatePositionStopsResult {
   ticket: string;
   stopLoss: number;
   takeProfit: number;
+  message?: string;
+  dryRun?: boolean;
+  raw?: unknown;
+}
+
+export interface FlattenAllPositionsRequest {
+  tradingAccountId: string;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface FlattenAllPositionsResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  message?: string;
+  dryRun?: boolean;
+  raw?: unknown;
+}
+
+export interface CancelAllOrdersRequest {
+  tradingAccountId: string;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface CancelAllOrdersResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  message?: string;
+  dryRun?: boolean;
+  raw?: unknown;
+}
+
+export interface ReversePositionRequest {
+  tradingAccountId: string;
+  ticket: string;
+  /**
+   * Absolute SL/TP/entry for the NEW (reversed) position. The Rithmic per-trade
+   * risk gate is fail-closed and REQUIRES an SL (+ entry) to bound the flip's
+   * loss; a reverse without SL is refused server-side by design.
+   */
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  entry?: number | null;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface ReversePositionResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  ticket: string;
   message?: string;
   dryRun?: boolean;
   raw?: unknown;

@@ -6,6 +6,12 @@ import type {
   PlaceOrderResult,
   ClosePositionRequest,
   ClosePositionResult,
+  FlattenAllPositionsRequest,
+  FlattenAllPositionsResult,
+  CancelAllOrdersRequest,
+  CancelAllOrdersResult,
+  ReversePositionRequest,
+  ReversePositionResult,
   TradingAccountContext,
   TradingPosition,
   UpdatePositionStopsRequest,
@@ -35,4 +41,27 @@ export interface BrokerAdapter {
     account: TradingAccountContext,
     request: UpdatePositionStopsRequest,
   ): Promise<UpdatePositionStopsResult>;
+
+  /**
+   * Optional futures-terminal bulk/flip actions. Only providers that advertise
+   * the matching capability implement them (Rithmic); the execution service
+   * checks `supports()` before dispatching, so MT5 omits these entirely.
+   */
+  flattenAllPositions?(
+    account: TradingAccountContext,
+    request: FlattenAllPositionsRequest,
+    idempotencyKey?: string,
+  ): Promise<FlattenAllPositionsResult>;
+
+  cancelAllOrders?(
+    account: TradingAccountContext,
+    request: CancelAllOrdersRequest,
+    idempotencyKey?: string,
+  ): Promise<CancelAllOrdersResult>;
+
+  reversePosition?(
+    account: TradingAccountContext,
+    request: ReversePositionRequest,
+    idempotencyKey?: string,
+  ): Promise<ReversePositionResult>;
 }

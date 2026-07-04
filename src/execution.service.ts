@@ -15,6 +15,12 @@ import { BrokerRegistryService } from './core/broker-registry.service';
 import type {
   ClosePositionRequest,
   ClosePositionResult,
+  FlattenAllPositionsRequest,
+  FlattenAllPositionsResult,
+  CancelAllOrdersRequest,
+  CancelAllOrdersResult,
+  ReversePositionRequest,
+  ReversePositionResult,
   PlaceOrderRequest,
   PlaceOrderResult,
   UpdatePositionStopsRequest,
@@ -498,6 +504,288 @@ export class ExecutionService {
     return response;
   }
 
+  /**
+   * FLATTEN ALL — close every position + cancel every working order on the
+   * account. De-risking action, so no RiskGuard pre-check (it only ever reduces
+   * exposure). Gated by the confirmation phrase for real runs; dry-run is exempt
+   * and validated by the adapter without touching the broker.
+   */
+  async flattenAllPositions(
+    userId: string,
+    payload: unknown,
+    idempotencyKey?: string,
+  ): Promise<FlattenAllPositionsResult> {
+    const request = this.parseFlattenAllRequest(payload);
+    this.assertRealConfirmation(request);
+    const account = await this.query.getOwnedAccountContext(
+      userId,
+      request.tradingAccountId,
+    );
+    const adapter = this.brokerRegistry.get(account.provider);
+    if (account.status.toLowerCase() !== 'connected') {
+      throw new ForbiddenException('Trading account not connected');
+    }
+    if (!adapter.supports('flatten_all') || !adapter.flattenAllPositions) {
+      throw new ForbiddenException(
+        `Provider ${account.provider} does not support flatten-all`,
+      );
+    }
+
+    const result = await adapter.flattenAllPositions(
+      account,
+      request,
+      idempotencyKey,
+    );
+    if (!result.success) {
+      this.auditExecution({
+        userId,
+        tradingAccountId: account.id,
+        provider: account.provider,
+        action: 'flatten_all',
+        dryRun: request.dryRun === true,
+        success: false,
+        message: result.message || 'Flatten all failed',
+      });
+      throw new BadRequestException(result.message || 'Flatten all failed');
+    }
+    this.auditExecution({
+      userId,
+      tradingAccountId: account.id,
+      provider: account.provider,
+      action: 'flatten_all',
+      dryRun: request.dryRun === true,
+      success: true,
+      message: result.message || 'Flatten all executed',
+    });
+    return result;
+  }
+
+  /**
+   * CANCEL ALL — cancel every working order on the account WITHOUT touching open
+   * positions. De-risking (removes pending orders), so no RiskGuard pre-check.
+   */
+  async cancelAllOrders(
+    userId: string,
+    payload: unknown,
+    idempotencyKey?: string,
+  ): Promise<CancelAllOrdersResult> {
+    const request = this.parseCancelAllOrdersRequest(payload);
+    this.assertRealConfirmation(request);
+    const account = await this.query.getOwnedAccountContext(
+      userId,
+      request.tradingAccountId,
+    );
+    const adapter = this.brokerRegistry.get(account.provider);
+    if (account.status.toLowerCase() !== 'connected') {
+      throw new ForbiddenException('Trading account not connected');
+    }
+    if (!adapter.supports('cancel_all_orders') || !adapter.cancelAllOrders) {
+      throw new ForbiddenException(
+        `Provider ${account.provider} does not support cancel-all`,
+      );
+    }
+
+    const result = await adapter.cancelAllOrders(
+      account,
+      request,
+      idempotencyKey,
+    );
+    if (!result.success) {
+      this.auditExecution({
+        userId,
+        tradingAccountId: account.id,
+        provider: account.provider,
+        action: 'cancel_all_orders',
+        dryRun: request.dryRun === true,
+        success: false,
+        message: result.message || 'Cancel all failed',
+      });
+      throw new BadRequestException(result.message || 'Cancel all failed');
+    }
+    this.auditExecution({
+      userId,
+      tradingAccountId: account.id,
+      provider: account.provider,
+      action: 'cancel_all_orders',
+      dryRun: request.dryRun === true,
+      success: true,
+      message: result.message || 'Cancel all executed',
+    });
+    return result;
+  }
+
+  /**
+   * REVERSE (flip) a position: close it and open the opposite side. This OPENS a
+   * new position, so — like place/close — it passes the RiskGuard pre-check
+   * (opposite side, current size) and records a trade on success. The re-entry
+   * clamp + fail-closed per-trade risk gate live server-side in kai-backend.
+   */
+  async reversePosition(
+    userId: string,
+    ticket: string,
+    payload: unknown,
+    idempotencyKey?: string,
+  ): Promise<ReversePositionResult> {
+    const request = this.parseReversePositionRequest(ticket, payload);
+    this.assertRealConfirmation(request);
+    const account = await this.query.getOwnedAccountContext(
+      userId,
+      request.tradingAccountId,
+    );
+    const adapter = this.brokerRegistry.get(account.provider);
+    if (account.status.toLowerCase() !== 'connected') {
+      throw new ForbiddenException('Trading account not connected');
+    }
+    if (!adapter.supports('reverse_position') || !adapter.reversePosition) {
+      throw new ForbiddenException(
+        `Provider ${account.provider} does not support reverse`,
+      );
+    }
+
+    // Resolve the position so RiskGuard sees the NEW (opposite-side) trade.
+    let positions;
+    try {
+      positions = await adapter.listPositions(account);
+    } catch (error) {
+      throw new ServiceUnavailableException({
+        code: 'TRADING_POSITIONS_UNAVAILABLE',
+        message: 'No se pudo consultar posiciones del provider.',
+        provider: account.provider,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const position = positions.find((row) => row.id === request.ticket);
+    if (!position) {
+      throw new NotFoundException('Trading position not found');
+    }
+    const reversedSide: 'buy' | 'sell' =
+      position.side === 'buy' ? 'sell' : 'buy';
+
+    if (request.dryRun !== true) {
+      const riskCheck = await this.riskGuard.checkRiskLimits({
+        userId,
+        accountId: account.id,
+        symbol: position.symbol,
+        side: reversedSide,
+        volume: position.volume,
+      });
+      if (!riskCheck.allowed) {
+        this.auditExecution({
+          userId,
+          tradingAccountId: account.id,
+          provider: account.provider,
+          action: 'reverse_position',
+          dryRun: false,
+          symbol: position.symbol,
+          ticket: position.id,
+          success: false,
+          message: riskCheck.reason || 'RiskGuard blocked operation',
+        });
+        throw new ForbiddenException(
+          riskCheck.reason || 'RiskGuard blocked operation',
+        );
+      }
+    }
+
+    const result = await adapter.reversePosition(
+      account,
+      request,
+      idempotencyKey,
+    );
+    if (!result.success) {
+      this.auditExecution({
+        userId,
+        tradingAccountId: account.id,
+        provider: account.provider,
+        action: 'reverse_position',
+        dryRun: request.dryRun === true,
+        symbol: position.symbol,
+        ticket: position.id,
+        success: false,
+        message: result.message || 'Reverse failed',
+      });
+      throw new BadRequestException(result.message || 'Reverse failed');
+    }
+    if (request.dryRun !== true) {
+      await this.riskGuard.recordTradeExecuted(userId, account.id);
+    }
+    this.auditExecution({
+      userId,
+      tradingAccountId: account.id,
+      provider: account.provider,
+      action: 'reverse_position',
+      dryRun: request.dryRun === true,
+      symbol: position.symbol,
+      ticket: position.id,
+      success: true,
+      message: result.message || 'Reverse executed',
+    });
+    return result;
+  }
+
+  private parseFlattenAllRequest(payload: unknown): FlattenAllPositionsRequest {
+    const body =
+      payload && typeof payload === 'object'
+        ? (payload as Record<string, unknown>)
+        : {};
+    const tradingAccountId = String(body.tradingAccountId || '').trim();
+    if (!tradingAccountId) {
+      throw new BadRequestException('tradingAccountId is required');
+    }
+    if (body.dryRun !== true && body.dryRun !== false) {
+      throw new BadRequestException('dryRun must be true or false');
+    }
+    return {
+      tradingAccountId,
+      dryRun: body.dryRun === true,
+      confirmationText:
+        body.confirmationText === null || body.confirmationText === undefined
+          ? null
+          : String(body.confirmationText),
+    };
+  }
+
+  private parseCancelAllOrdersRequest(payload: unknown): CancelAllOrdersRequest {
+    // Same shape as flatten-all; kept separate for clarity/future divergence.
+    return this.parseFlattenAllRequest(payload);
+  }
+
+  private parseReversePositionRequest(
+    ticket: string,
+    payload: unknown,
+  ): ReversePositionRequest {
+    const body =
+      payload && typeof payload === 'object'
+        ? (payload as Record<string, unknown>)
+        : {};
+    const tradingAccountId = String(body.tradingAccountId || '').trim();
+    const normalizedTicket = String(ticket || '').trim();
+    if (!normalizedTicket) {
+      throw new BadRequestException('ticket is required');
+    }
+    if (!tradingAccountId) {
+      throw new BadRequestException('tradingAccountId is required');
+    }
+    if (body.dryRun !== true && body.dryRun !== false) {
+      throw new BadRequestException('dryRun must be true or false');
+    }
+    return {
+      tradingAccountId,
+      ticket: normalizedTicket,
+      // Absolute SL/TP/entry for the new (reversed) position. Optional here; the
+      // fail-closed per-trade risk gate in kai-backend refuses a reverse with no
+      // SL, so a protective SL should be supplied by the caller to execute.
+      stopLoss: this.optionalPositiveNumber(body.stopLoss),
+      takeProfit: this.optionalPositiveNumber(body.takeProfit),
+      entry: this.optionalPositiveNumber(body.entry),
+      dryRun: body.dryRun === true,
+      confirmationText:
+        body.confirmationText === null || body.confirmationText === undefined
+          ? null
+          : String(body.confirmationText),
+    };
+  }
+
   private parsePlaceOrderRequest(payload: unknown): PlaceOrderRequest {
     const body =
       payload && typeof payload === 'object'
@@ -655,7 +943,13 @@ export class ExecutionService {
     userId: string;
     tradingAccountId: string;
     provider: string;
-    action: 'open_order' | 'close_position' | 'update_stops';
+    action:
+      | 'open_order'
+      | 'close_position'
+      | 'update_stops'
+      | 'flatten_all'
+      | 'cancel_all_orders'
+      | 'reverse_position';
     dryRun: boolean;
     symbol?: string;
     ticket?: string;

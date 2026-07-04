@@ -215,6 +215,11 @@ export class QueryService {
       placeMarketOrder: adapter.capabilities.placeMarketOrder && isConnected,
       closePosition: adapter.capabilities.closePosition && isConnected,
       updateStops: adapter.capabilities.updateStops && isConnected,
+      flattenAll: adapter.capabilities.flattenAll === true && isConnected,
+      cancelAllOrders:
+        adapter.capabilities.cancelAllOrders === true && isConnected,
+      reversePosition:
+        adapter.capabilities.reversePosition === true && isConnected,
     };
   }
 

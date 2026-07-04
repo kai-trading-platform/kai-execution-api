@@ -6,6 +6,12 @@ import type {
   BrokerCapabilities,
   ClosePositionRequest,
   ClosePositionResult,
+  FlattenAllPositionsRequest,
+  FlattenAllPositionsResult,
+  CancelAllOrdersRequest,
+  CancelAllOrdersResult,
+  ReversePositionRequest,
+  ReversePositionResult,
   PlaceOrderRequest,
   PlaceOrderResult,
   TradingAccountContext,
@@ -17,6 +23,7 @@ import { KaiBackendRithmicClient } from './kai-backend.client';
 import {
   rithmicPlaceOrderResponseSchema,
   rithmicPositionsResponseSchema,
+  rithmicReverseResponseSchema,
   rithmicWriteResponseSchema,
 } from './rithmic-schemas';
 
@@ -68,6 +75,10 @@ export class RithmicBrokerAdapter implements BrokerAdapter {
       placeMarketOrder: this.ordersEnabled,
       closePosition: this.ordersEnabled,
       updateStops: this.ordersEnabled,
+      // Bulk/flip actions gated by the SAME kill-switch as the other writes.
+      flattenAll: this.ordersEnabled,
+      cancelAllOrders: this.ordersEnabled,
+      reversePosition: this.ordersEnabled,
     };
 
     if (this.ordersEnabled) {
@@ -89,6 +100,12 @@ export class RithmicBrokerAdapter implements BrokerAdapter {
         return this.capabilities.closePosition;
       case 'update_position_stops':
         return this.capabilities.updateStops;
+      case 'flatten_all':
+        return this.capabilities.flattenAll === true;
+      case 'cancel_all_orders':
+        return this.capabilities.cancelAllOrders === true;
+      case 'reverse_position':
+        return this.capabilities.reversePosition === true;
       default:
         return false;
     }
@@ -271,6 +288,126 @@ export class RithmicBrokerAdapter implements BrokerAdapter {
       ticket: request.ticket,
       stopLoss: request.stopLoss,
       takeProfit: request.takeProfit,
+      message: parsed.data.message,
+      raw: parsed.data,
+    };
+  }
+
+  async flattenAllPositions(
+    account: TradingAccountContext,
+    request: FlattenAllPositionsRequest,
+    idempotencyKey?: string,
+  ): Promise<FlattenAllPositionsResult> {
+    this.assertOrdersEnabled();
+
+    if (request.dryRun === true) {
+      return {
+        success: true,
+        provider: this.provider,
+        tradingAccountId: account.id,
+        message: 'Dry-run flatten-all validated. No positions were closed.',
+        dryRun: true,
+      };
+    }
+
+    const raw = await this.backend.flattenAll(
+      { account: account.id },
+      idempotencyKey,
+    );
+    const parsed = rithmicWriteResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        'kai-backend returned a Rithmic flatten-all result in an unexpected shape',
+      );
+    }
+    return {
+      success: parsed.data.ok,
+      provider: this.provider,
+      tradingAccountId: account.id,
+      message: parsed.data.message,
+      raw: parsed.data,
+    };
+  }
+
+  async cancelAllOrders(
+    account: TradingAccountContext,
+    request: CancelAllOrdersRequest,
+    idempotencyKey?: string,
+  ): Promise<CancelAllOrdersResult> {
+    this.assertOrdersEnabled();
+
+    if (request.dryRun === true) {
+      return {
+        success: true,
+        provider: this.provider,
+        tradingAccountId: account.id,
+        message: 'Dry-run cancel-all validated. No orders were cancelled.',
+        dryRun: true,
+      };
+    }
+
+    const raw = await this.backend.cancelAllOrders(
+      { account: account.id },
+      idempotencyKey,
+    );
+    const parsed = rithmicWriteResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        'kai-backend returned a Rithmic cancel-all result in an unexpected shape',
+      );
+    }
+    return {
+      success: parsed.data.ok,
+      provider: this.provider,
+      tradingAccountId: account.id,
+      message: parsed.data.message,
+      raw: parsed.data,
+    };
+  }
+
+  async reversePosition(
+    account: TradingAccountContext,
+    request: ReversePositionRequest,
+    idempotencyKey?: string,
+  ): Promise<ReversePositionResult> {
+    this.assertOrdersEnabled();
+
+    if (request.dryRun === true) {
+      return {
+        success: true,
+        provider: this.provider,
+        tradingAccountId: account.id,
+        ticket: request.ticket,
+        message: 'Dry-run reverse validated. No position was reversed.',
+        dryRun: true,
+      };
+    }
+
+    // Rithmic reverse is keyed by SYMBOL (the bridge is symbol-scoped); resolve
+    // the ticket → symbol exactly like the close path.
+    const symbol = await this.resolveSymbolForTicket(account, request.ticket);
+    const raw = await this.backend.reversePosition(
+      {
+        account: account.id,
+        symbol,
+        sl: request.stopLoss ?? null,
+        tp: request.takeProfit ?? null,
+        entry: request.entry ?? null,
+      },
+      idempotencyKey,
+    );
+
+    const parsed = rithmicReverseResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new Error(
+        'kai-backend returned a Rithmic reverse result in an unexpected shape',
+      );
+    }
+    return {
+      success: parsed.data.ok,
+      provider: this.provider,
+      tradingAccountId: account.id,
+      ticket: request.ticket,
       message: parsed.data.message,
       raw: parsed.data,
     };
