@@ -1,0 +1,2 @@
+51bded6ef08973526580fccb4dc27797d5702655 ec852627fc03be0a7a1e7ff5a9e94fa0db3fdd7a JcperezDev <jcperez@scyra.dev> 1782615189 -0400	reset: moving to HEAD~1
+ec852627fc03be0a7a1e7ff5a9e94fa0db3fdd7a d02cd8b7a7c2b614e2bae82de4c65b8b755d0cff JcperezDev <jcperez@scyra.dev> 1782914282 -0400	commit: feat(execution-api): idempotency, refresh-token rejection, validation hardening

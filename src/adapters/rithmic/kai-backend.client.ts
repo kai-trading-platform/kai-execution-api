@@ -7,6 +7,15 @@ import { ConfigService } from '@nestjs/config';
  * + CRON_SECRET via the `x-cron-secret` header), so execution-api never touches
  * the Rithmic bridge directly — kai-backend's RithmicModule stays the single
  * owner of session/credential/spec logic.
+ *
+ * Per-instance bridge routing (kai-rithmic-bridge vs kai-rithmic-bridge-2):
+ * unlike MT5 (see Mt5BridgeClient's MT5_BRIDGE_URL_{n} resolution), there is
+ * NO Rithmic bridge URL to resolve HERE. Every call carries the Kai trading-
+ * account UUID and kai-backend resolves that account's
+ * `mt5_accounts.bridge_instance` against RITHMIC_BRIDGE_URL_<n> server-side
+ * (RithmicExecutionService / rithmic-endpoint.util). Do NOT add a
+ * RITHMIC_BRIDGE_URL_* lookup in execution-api — it would bypass the single
+ * owner of that routing rule.
  */
 @Injectable()
 export class KaiBackendRithmicClient {

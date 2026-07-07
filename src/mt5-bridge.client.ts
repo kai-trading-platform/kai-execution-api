@@ -3,6 +3,12 @@ import { ConfigService } from '@nestjs/config';
 
 export interface ExecuteMarketOrderParams {
   accountId: string;
+  /**
+   * Docker slot of the per-account MT5 bridge (mt5_accounts.bridge_instance).
+   * Routes the call to that account's bridge container; null/undefined falls
+   * back to the default MT5_BRIDGE_URL.
+   */
+  bridgeInstance?: number | null;
   symbol: string;
   type: 'buy' | 'sell';
   volume: number;
@@ -29,6 +35,7 @@ export interface ExecuteMarketOrderResult {
 
 export interface ModifyPositionParams {
   accountId: string;
+  bridgeInstance?: number | null;
   ticket: string;
   sl: number;
   tp: number;
@@ -36,8 +43,15 @@ export interface ModifyPositionParams {
 
 export interface ClosePositionParams {
   accountId: string;
+  bridgeInstance?: number | null;
   ticket: string;
   volume?: number;
+}
+
+/** Resolved base URL + API key for one MT5 bridge container. */
+interface Mt5BridgeEndpoint {
+  baseUrl: string;
+  apiKey: string;
 }
 
 export interface ClosePositionResult {
@@ -53,10 +67,77 @@ export class Mt5BridgeClient {
   private readonly apiKey: string;
   private readonly timeoutMs: number;
 
-  constructor(configService: ConfigService) {
+  constructor(private readonly configService: ConfigService) {
     this.baseUrl = (configService.get<string>('MT5_BRIDGE_URL') || 'http://localhost:8001').replace(/\/$/, '');
     this.apiKey = configService.get<string>('MT5_BRIDGE_API_KEY') || '';
     this.timeoutMs = 15000;
+  }
+
+  /**
+   * Clamp a bridge-instance value to a sane routing range. Mirrors
+   * backend-kai's Mt5BridgeEndpointService: routing identity uses a FIXED
+   * ceiling (env MT5_MAX_INSTANCES_ABSOLUTE, default 512), never a dynamic
+   * capacity value, so an already-assigned slot always resolves.
+   */
+  private normalizeBridgeInstance(value: unknown): number | null {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    const normalized = Math.floor(parsed);
+    const ceilingRaw = Number(
+      this.configService.get<string>('MT5_MAX_INSTANCES_ABSOLUTE', ''),
+    );
+    const ceiling =
+      Number.isFinite(ceilingRaw) && ceilingRaw >= 1
+        ? Math.floor(ceilingRaw)
+        : 512;
+    if (normalized < 1 || normalized > ceiling) return null;
+    return normalized;
+  }
+
+  /**
+   * Resolve the bridge container for one account. MT5 bridges are PER-ACCOUNT
+   * Docker instances (mt5-bridge-1, mt5-bridge-2, …), so a single fixed
+   * MT5_BRIDGE_URL only ever reaches the account that happens to live on that
+   * slot — every other account silently sees no positions and, worse, would
+   * route orders/closes to the WRONG account's bridge. Resolution order per
+   * instance (mirrors backend-kai's Mt5BridgeEndpointService):
+   *   1. MT5_BRIDGE_URL_{n}            (explicit per-slot override)
+   *   2. MT5_BRIDGE_URL_TEMPLATE       ("http://mt5-bridge-{instance}:8001")
+   *   3. derived from MT5_BRIDGE_URL   (host ending in "-<digits>" has its
+   *      slot number swapped, e.g. http://mt5-bridge-1:8001 → ...-4:8001, so
+   *      routing works without new env vars in the current deployment)
+   *   4. MT5_BRIDGE_URL as-is          (default/single-bridge fallback)
+   * API key: MT5_BRIDGE_API_KEY_{n} over the shared MT5_BRIDGE_API_KEY.
+   */
+  private resolveEndpoint(bridgeInstance?: number | null): Mt5BridgeEndpoint {
+    const instance = this.normalizeBridgeInstance(bridgeInstance);
+    if (!instance) {
+      return { baseUrl: this.baseUrl, apiKey: this.apiKey };
+    }
+
+    const explicitUrl = String(
+      this.configService.get<string>(`MT5_BRIDGE_URL_${instance}`, ''),
+    ).trim();
+    const templateUrl = String(
+      this.configService.get<string>('MT5_BRIDGE_URL_TEMPLATE', ''),
+    ).trim();
+
+    let baseUrl = explicitUrl;
+    if (!baseUrl && templateUrl) {
+      baseUrl = templateUrl.replace('{instance}', String(instance));
+    }
+    if (!baseUrl) {
+      // Derive from the default URL when it targets a numbered slot
+      // (e.g. http://mt5-bridge-1:8001): swap the trailing slot number.
+      baseUrl = this.baseUrl.replace(/-\d+(?=(?::\d+)?$)/, `-${instance}`);
+    }
+    baseUrl = (baseUrl || this.baseUrl).replace(/\/$/, '');
+
+    const explicitApiKey = String(
+      this.configService.get<string>(`MT5_BRIDGE_API_KEY_${instance}`, ''),
+    ).trim();
+
+    return { baseUrl, apiKey: explicitApiKey || this.apiKey };
   }
 
   private async request<T>(
@@ -64,15 +145,17 @@ export class Mt5BridgeClient {
     path: string,
     body?: unknown,
     extraHeaders?: Record<string, string>,
+    bridgeInstance?: number | null,
   ): Promise<T> {
+    const endpoint = this.resolveEndpoint(bridgeInstance);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${path}`, {
+      const response = await fetch(`${endpoint.baseUrl}${path}`, {
         method,
         headers: {
           'Content-Type': 'application/json',
-          'X-API-Key': this.apiKey,
+          'X-API-Key': endpoint.apiKey,
           ...(extraHeaders ?? {}),
         },
         body: body ? JSON.stringify(body) : undefined,
@@ -92,7 +175,7 @@ export class Mt5BridgeClient {
 
   async executeMarketOrder(params: ExecuteMarketOrderParams): Promise<ExecuteMarketOrderResult> {
     try {
-      const { idempotencyKey, ...orderParams } = params;
+      const { idempotencyKey, bridgeInstance, ...orderParams } = params;
       // The bridge exposes market order placement at POST /orders (the
       // /orders/market alias isn't present on the deployed bridge build).
       const data = await this.request<{ ticket?: number; deal?: number; price?: number; sl?: number; tp?: number }>(
@@ -100,6 +183,7 @@ export class Mt5BridgeClient {
         '/orders',
         orderParams,
         idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
+        bridgeInstance,
       );
       return { ok: true, data };
     } catch (error) {
@@ -114,6 +198,8 @@ export class Mt5BridgeClient {
         'PATCH',
         `/positions/${params.ticket}`,
         { sl: params.sl, tp: params.tp },
+        undefined,
+        params.bridgeInstance,
       );
       return { ok: true, data };
     } catch (error) {
@@ -130,6 +216,8 @@ export class Mt5BridgeClient {
         'DELETE',
         `/positions/${params.ticket}`,
         params.volume != null ? { volume: params.volume } : undefined,
+        undefined,
+        params.bridgeInstance,
       );
       return { ok: true, data };
     } catch (error) {
@@ -138,16 +226,26 @@ export class Mt5BridgeClient {
     }
   }
 
-  async fetchPositions(accountId: string): Promise<unknown[]> {
+  async fetchPositions(
+    accountId: string,
+    bridgeInstance?: number | null,
+  ): Promise<unknown[]> {
     try {
       const data = await this.request<unknown[]>(
         'GET',
         `/positions?accountId=${encodeURIComponent(accountId)}`,
+        undefined,
+        undefined,
+        bridgeInstance,
       );
       return data;
     } catch (error) {
+      // Rethrow so QueryService.listPositions can surface a 503
+      // (TRADING_POSITIONS_UNAVAILABLE) instead of a silent "no positions" —
+      // returning [] here made a mis-routed/offline bridge indistinguishable
+      // from a flat account.
       this.logger.warn(`fetchPositions failed: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      throw error;
     }
   }
 }

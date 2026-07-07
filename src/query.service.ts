@@ -91,7 +91,9 @@ export class QueryService {
   }
 
   private normalizeProvider(value: unknown): BrokerProviderKey {
-    return value === 'rithmic' ? 'rithmic' : 'mt5';
+    if (value === 'rithmic') return 'rithmic';
+    if (value === 'sim') return 'sim';
+    return 'mt5';
   }
 
   /**

@@ -12,6 +12,8 @@ import { QueryService } from './query.service';
 import { Mt5BrokerAdapter } from './adapters/mt5/mt5-broker.adapter';
 import { RithmicBrokerAdapter } from './adapters/rithmic/rithmic-broker.adapter';
 import { KaiBackendRithmicClient } from './adapters/rithmic/kai-backend.client';
+import { SimBrokerAdapter } from './adapters/sim/sim-broker.adapter';
+import { YahooPriceClient } from './adapters/sim/yahoo-price.client';
 import { BrokerRegistryService } from './core/broker-registry.service';
 
 @Module({
@@ -31,6 +33,8 @@ import { BrokerRegistryService } from './core/broker-registry.service';
     Mt5BrokerAdapter,
     KaiBackendRithmicClient,
     RithmicBrokerAdapter,
+    YahooPriceClient,
+    SimBrokerAdapter,
     BrokerRegistryService,
   ],
   exports: [ExecutionService, QueryService],

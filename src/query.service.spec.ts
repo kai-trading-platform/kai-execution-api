@@ -124,6 +124,9 @@ describe('QueryService.listAccounts', () => {
         placeMarketOrder: true,
         closePosition: true,
         updateStops: true,
+        flattenAll: false,
+        cancelAllOrders: false,
+        reversePosition: false,
       },
     });
   });
@@ -241,6 +244,9 @@ describe('QueryService.listAccounts', () => {
         placeMarketOrder: true,
         closePosition: true,
         updateStops: true,
+        flattenAll: false,
+        cancelAllOrders: false,
+        reversePosition: false,
       },
     });
   });

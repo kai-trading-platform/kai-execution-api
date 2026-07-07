@@ -53,6 +53,7 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
   ): Promise<TradingPosition[]> {
     const rawPositions = await this.mt5Bridge.fetchPositions(
       account.providerAccountId,
+      account.bridgeInstance,
     );
 
     const parsed = mt5PositionsSchema.safeParse(rawPositions);
@@ -96,6 +97,7 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
   ): Promise<PlaceOrderResult> {
     const result = await this.mt5Bridge.executeMarketOrder({
       accountId: account.providerAccountId,
+      bridgeInstance: account.bridgeInstance,
       symbol: request.symbol,
       type: request.side,
       volume: request.volume,
@@ -156,6 +158,7 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
 
     const result = await this.mt5Bridge.closePosition({
       accountId: account.providerAccountId,
+      bridgeInstance: account.bridgeInstance,
       ticket: request.ticket,
     });
 
@@ -197,6 +200,7 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
 
     const result = await this.mt5Bridge.modifyPosition({
       accountId: account.providerAccountId,
+      bridgeInstance: account.bridgeInstance,
       ticket: request.ticket,
       sl: request.stopLoss,
       tp: request.takeProfit,

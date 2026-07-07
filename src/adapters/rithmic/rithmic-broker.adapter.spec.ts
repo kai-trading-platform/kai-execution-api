@@ -56,6 +56,9 @@ describe('RithmicBrokerAdapter', () => {
         placeMarketOrder: false,
         closePosition: false,
         updateStops: false,
+        flattenAll: false,
+        cancelAllOrders: false,
+        reversePosition: false,
       });
       expect(adapter.supports('list_positions')).toBe(true);
       expect(adapter.supports('place_market_order')).toBe(false);
@@ -81,6 +84,9 @@ describe('RithmicBrokerAdapter', () => {
         placeMarketOrder: true,
         closePosition: true,
         updateStops: true,
+        flattenAll: true,
+        cancelAllOrders: true,
+        reversePosition: true,
       });
       expect(adapter.supports('place_market_order')).toBe(true);
       expect(adapter.supports('close_position')).toBe(true);
@@ -182,6 +188,54 @@ describe('RithmicBrokerAdapter', () => {
       const { adapter } = makeAdapter({ fetchPositions }, 'false');
       await expect(adapter.listPositions(ACCOUNT)).resolves.toEqual([]);
     });
+  });
+
+  describe('per-instance Rithmic bridge routing is delegated to kai-backend', () => {
+    // Unlike MT5 (Mt5BridgeClient resolves MT5_BRIDGE_URL_{n} locally), the
+    // Rithmic bridge instance (kai-rithmic-bridge vs kai-rithmic-bridge-2) is
+    // resolved SERVER-SIDE by kai-backend from mt5_accounts.bridge_instance +
+    // RITHMIC_BRIDGE_URL_<n>. The adapter must therefore key every call by the
+    // account UUID only — same call shape whatever bridgeInstance the context
+    // carries — and never consult RITHMIC_BRIDGE_URL_* env here.
+    it.each([null, 2, 3])(
+      'keys calls by account UUID for bridgeInstance=%s (no local URL resolution)',
+      async (bridgeInstance) => {
+        const account: TradingAccountContext = {
+          ...ACCOUNT,
+          id: 'acc-routed',
+          bridgeInstance: bridgeInstance as number | null,
+        };
+        const fetchPositions = jest.fn().mockResolvedValue({ positions: [] });
+        const placeOrder = jest
+          .fn()
+          .mockResolvedValue({ ok: true, orderId: '1', message: 'ok' });
+        const config = makeConfig('true');
+        const backend = {
+          fetchPositions,
+          placeOrder,
+        } as unknown as KaiBackendRithmicClient;
+        const adapter = new RithmicBrokerAdapter(backend, config);
+
+        await adapter.listPositions(account);
+        expect(fetchPositions).toHaveBeenCalledWith('acc-routed');
+
+        await adapter.placeOrder(account, {
+          symbol: 'MNQ',
+          side: 'buy',
+          volume: 1,
+        } as never);
+        expect(placeOrder).toHaveBeenCalledWith(
+          expect.objectContaining({ account: 'acc-routed' }),
+        );
+
+        // The adapter never reads a Rithmic bridge URL from env — routing is
+        // kai-backend's job (only the orders flag is consulted).
+        const configGet = (config.get as jest.Mock).mock.calls.map((c) => c[0]);
+        expect(
+          configGet.some((k: string) => String(k).startsWith('RITHMIC_BRIDGE_URL')),
+        ).toBe(false);
+      },
+    );
   });
 
   describe('write paths — flag OFF: throw, never touch the backend', () => {

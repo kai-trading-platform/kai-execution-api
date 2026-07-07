@@ -1,0 +1,12 @@
+feat(execution-api): idempotency, refresh-token rejection, validation hardening
+
+- jwt.strategy: reject refresh tokens on order-execution endpoints
+  (defense in depth — only access tokens may authorize trades)
+- controller: support Idempotency-Key header on POST /orders
+- main.ts: forbidNonWhitelisted + forbidUnknownValues on ValidationPipe
+- mt5-broker.adapter + execution.service: refactor for new interface
+  (broker-adapter.interface adds close-by-ticket hook)
+- positionSizing: tighten round-trip math + new spec coverage
+- mt5-bridge.client: switch internal auth header to x-cron-secret
+- mt5-schemas + symbolMetadata: shared types from MT5 bridge
+- .gitignore + pnpm-lock.yaml: track deps

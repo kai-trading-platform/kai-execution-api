@@ -1,4 +1,4 @@
-export type BrokerProviderKey = 'mt5' | 'rithmic';
+export type BrokerProviderKey = 'mt5' | 'rithmic' | 'sim';
 
 export type TradingOrderSide = 'buy' | 'sell';
 
@@ -105,6 +105,13 @@ export interface PlaceOrderResult {
 export interface ClosePositionRequest {
   tradingAccountId: string;
   ticket: string;
+  /**
+   * Optional partial-close volume (contracts). Only the SIM adapter honors it
+   * today: absent/<=0 closes the whole position, a value below the open qty
+   * closes that slice and leaves the remainder open. MT5/Rithmic ignore it
+   * (their bridges close the full ticket).
+   */
+  volume?: number | null;
   dryRun?: boolean;
   confirmationText?: string | null;
 }
