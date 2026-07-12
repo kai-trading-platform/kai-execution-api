@@ -314,3 +314,72 @@ describe('QueryService.listPositions routing', () => {
     expect(listPositions.mock.calls[0][0].provider).toBe('mt5');
   });
 });
+
+describe('QueryService.listOrders', () => {
+  const USER_ID = 'user-1';
+
+  function makeService(opts: {
+    provider: string;
+    supportsOrders: boolean;
+    orders?: unknown[];
+    hasProvider?: boolean;
+  }) {
+    const listOrders = jest.fn().mockResolvedValue(opts.orders ?? []);
+    const prisma = {
+      mt5Account: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(buildRow({ id: 'acc-1', mt5AccountId: 'APEX-1' })),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([{ provider: opts.provider }]),
+    };
+    const adapter = {
+      provider: opts.provider,
+      capabilities: MT5_CAPABILITIES,
+      supports: jest.fn((cap: string) =>
+        cap === 'list_orders' ? opts.supportsOrders : false,
+      ),
+      listOrders,
+    };
+    const brokerRegistry = {
+      has: jest.fn(() => opts.hasProvider ?? true),
+      get: jest.fn(() => adapter),
+    };
+    const service = new QueryService(prisma as never, brokerRegistry as never);
+    return { service, brokerRegistry, adapter, listOrders };
+  }
+
+  it('delegates to the adapter when the provider supports list_orders', async () => {
+    const orders = [{ id: '1', symbol: 'EURUSD' }];
+    const { service, listOrders } = makeService({
+      provider: 'mt5',
+      supportsOrders: true,
+      orders,
+    });
+
+    await expect(service.listOrders(USER_ID, 'acc-1')).resolves.toBe(orders);
+    expect(listOrders).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty list (no 503) when the provider lacks list_orders', async () => {
+    const { service, listOrders } = makeService({
+      provider: 'sim',
+      supportsOrders: false,
+    });
+
+    await expect(service.listOrders(USER_ID, 'acc-1')).resolves.toEqual([]);
+    expect(listOrders).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a 503 when the adapter throws', async () => {
+    const { service, listOrders } = makeService({
+      provider: 'mt5',
+      supportsOrders: true,
+    });
+    listOrders.mockRejectedValueOnce(new Error('bridge offline'));
+
+    await expect(service.listOrders(USER_ID, 'acc-1')).rejects.toMatchObject({
+      response: { code: 'TRADING_ORDERS_UNAVAILABLE' },
+    });
+  });
+});

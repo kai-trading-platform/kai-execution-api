@@ -50,6 +50,38 @@ export const mt5PositionsSchema = z.array(mt5PositionSchema);
 
 export type Mt5PositionRaw = z.infer<typeof mt5PositionSchema>;
 
+// Working (pending) order as returned by the bridge GET /orders (GET_ORDERS).
+// Keys mirror _order_to_dict on the bridge: ticket/symbol/type(buy_limit,
+// sell_stop,…)/volume/openPrice/sl/tp/openTime(unix seconds)/comment/magic.
+// Tolerant like the positions schema: only ticket+symbol are required.
+export const mt5OrderSchema = z
+  .object({
+    ticket: numberOrString.optional(),
+    ticketId: numberOrString.optional(),
+    symbol: z.string(),
+    type: z.string().optional().default(''),
+    volume: optionalNumeric,
+    openPrice: optionalNumeric,
+    price: optionalNumeric,
+    price_open: optionalNumeric,
+    sl: optionalNumeric,
+    stopLoss: optionalNumeric,
+    tp: optionalNumeric,
+    takeProfit: optionalNumeric,
+    openTime: optionalNumeric,
+    time: optionalNumeric,
+    comment: z.string().nullish(),
+    magic: z.number().nullish(),
+  })
+  .passthrough()
+  .refine((o) => o.ticket != null || o.ticketId != null, {
+    message: 'order is missing a ticket identifier',
+  });
+
+export const mt5OrdersSchema = z.array(mt5OrderSchema);
+
+export type Mt5OrderRaw = z.infer<typeof mt5OrderSchema>;
+
 /** Result payload of a market-order placement (PLACE_ORDER on the bridge). */
 export const mt5OrderResultSchema = z
   .object({

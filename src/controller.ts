@@ -28,12 +28,28 @@ export class ExecutionController {
     return this.query.listAccounts(this.getUserId(req));
   }
 
+  @Get('accounts/:id/history')
+  listHistory(
+    @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Param('id') id: string,
+  ) {
+    return this.query.listHistory(this.getUserId(req), id);
+  }
+
   @Get('accounts/:id/positions')
   listPositions(
     @Req() req: Request & { user?: { sub?: string; id?: string } },
     @Param('id') id: string,
   ) {
     return this.query.listPositions(this.getUserId(req), id);
+  }
+
+  @Get('accounts/:id/orders')
+  listOrders(
+    @Req() req: Request & { user?: { sub?: string; id?: string } },
+    @Param('id') id: string,
+  ) {
+    return this.query.listOrders(this.getUserId(req), id);
   }
 
   @Post('orders')

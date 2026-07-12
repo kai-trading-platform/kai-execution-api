@@ -248,4 +248,24 @@ export class Mt5BridgeClient {
       throw error;
     }
   }
+
+  async fetchOrders(bridgeInstance?: number | null): Promise<unknown[]> {
+    try {
+      // The bridge is per-instance (one MT5 terminal per bridge), so working
+      // orders need no accountId filter — GET /orders returns this terminal's
+      // pending orders. Rethrow so QueryService can surface a 503 rather than an
+      // empty list that hides a mis-routed/offline bridge.
+      const data = await this.request<unknown[]>(
+        'GET',
+        '/orders',
+        undefined,
+        undefined,
+        bridgeInstance,
+      );
+      return data;
+    } catch (error) {
+      this.logger.warn(`fetchOrders failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+  }
 }

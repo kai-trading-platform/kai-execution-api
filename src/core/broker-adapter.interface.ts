@@ -13,6 +13,7 @@ import type {
   ReversePositionRequest,
   ReversePositionResult,
   TradingAccountContext,
+  TradingOrder,
   TradingPosition,
   UpdatePositionStopsRequest,
   UpdatePositionStopsResult,
@@ -25,6 +26,14 @@ export interface BrokerAdapter {
   supports(capability: BrokerCapability): boolean;
 
   listPositions(account: TradingAccountContext): Promise<TradingPosition[]>;
+
+  /**
+   * List WORKING (pending) orders — limit/stop orders not yet filled. Optional:
+   * only providers that advertise the `listOrders` capability implement it
+   * (MT5). QueryService checks `supports('list_orders')` first and returns an
+   * empty list for providers that omit it.
+   */
+  listOrders?(account: TradingAccountContext): Promise<TradingOrder[]>;
 
   placeOrder(
     account: TradingAccountContext,

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { BrokerAdapter } from '../../core/broker-adapter.interface';
-import { mt5OrderResultSchema, mt5PositionsSchema } from './mt5-schemas';
+import { mt5OrderResultSchema, mt5OrdersSchema, mt5PositionsSchema } from './mt5-schemas';
 import type {
   BrokerCapability,
   BrokerCapabilities,
@@ -9,6 +9,8 @@ import type {
   PlaceOrderRequest,
   PlaceOrderResult,
   TradingAccountContext,
+  TradingOrder,
+  TradingOrderKind,
   TradingPosition,
   UpdatePositionStopsRequest,
   UpdatePositionStopsResult,
@@ -24,6 +26,7 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
   readonly capabilities: BrokerCapabilities = {
     listAccounts: true,
     listPositions: true,
+    listOrders: true,
     placeMarketOrder: true,
     closePosition: true,
     updateStops: true,
@@ -37,6 +40,8 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
         return this.capabilities.listAccounts;
       case 'list_positions':
         return this.capabilities.listPositions;
+      case 'list_orders':
+        return this.capabilities.listOrders === true;
       case 'place_market_order':
         return this.capabilities.placeMarketOrder;
       case 'close_position':
@@ -88,6 +93,51 @@ export class Mt5BrokerAdapter implements BrokerAdapter {
       comment: position.comment ?? null,
       magic: position.magic ?? null,
     }));
+  }
+
+  async listOrders(account: TradingAccountContext): Promise<TradingOrder[]> {
+    const rawOrders = await this.mt5Bridge.fetchOrders(account.bridgeInstance);
+
+    const parsed = mt5OrdersSchema.safeParse(rawOrders);
+    if (!parsed.success) {
+      this.logger.error(
+        `MT5 orders response failed schema validation for account ${account.id}: ${parsed.error.message}`,
+      );
+      throw new Error('MT5 bridge returned orders in an unexpected shape');
+    }
+
+    const firstDefined = (...vals: unknown[]) =>
+      vals.find((v) => v !== undefined && v !== null);
+
+    return parsed.data.map((order) => {
+      // Bridge order type is e.g. 'buy_limit' | 'sell_stop' | 'buy_stop_limit'.
+      const rawType = String(order.type).toLowerCase();
+      const side: 'buy' | 'sell' = rawType.startsWith('sell') ? 'sell' : 'buy';
+      const kind: TradingOrderKind = rawType.includes('stop_limit')
+        ? 'stop_limit'
+        : rawType.includes('stop')
+          ? 'stop'
+          : rawType.includes('limit')
+            ? 'limit'
+            : 'other';
+      return {
+        id: String(firstDefined(order.ticket, order.ticketId)),
+        tradingAccountId: account.id,
+        provider: this.provider,
+        symbol: order.symbol,
+        side,
+        type: kind,
+        volume: Number(firstDefined(order.volume) ?? 0),
+        price: this.toNumberOrNull(
+          firstDefined(order.openPrice, order.price, order.price_open),
+        ),
+        stopLoss: this.toNumberOrNull(firstDefined(order.sl, order.stopLoss)),
+        takeProfit: this.toNumberOrNull(firstDefined(order.tp, order.takeProfit)),
+        placedAt: this.parseMt5Time(firstDefined(order.openTime, order.time)),
+        comment: order.comment ?? null,
+        magic: order.magic ?? null,
+      };
+    });
   }
 
   async placeOrder(

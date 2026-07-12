@@ -7,6 +7,7 @@ export type TradingOrderType = 'market';
 export type BrokerCapability =
   | 'list_accounts'
   | 'list_positions'
+  | 'list_orders'
   | 'place_market_order'
   | 'close_position'
   | 'update_position_stops'
@@ -20,6 +21,14 @@ export interface BrokerCapabilities {
   placeMarketOrder: boolean;
   closePosition: boolean;
   updateStops: boolean;
+  /**
+   * Whether the provider can list WORKING (pending) orders — limit/stop orders
+   * placed but not yet filled. Optional (treated as false when omitted): MT5
+   * supports it via the bridge; sim/rithmic don't yet. QueryService returns an
+   * empty list (not a 503) when a provider omits it, since a "pending orders"
+   * panel showing empty is the correct read for a market-only account.
+   */
+  listOrders?: boolean;
   /**
    * Futures-terminal bulk/flip actions (Rithmic only). Optional: providers that
    * don't implement them omit the flag (treated as false). Gated by the same
@@ -50,6 +59,10 @@ export interface ConnectedTradingAccount {
    * terminal's futures cap badge can show it ahead of an order being placed.
    */
   maxContracts?: number;
+  /** Balance al inicio del día de trading actual (boundary 18:00 ET). */
+  sodBalance?: number | null;
+  /** PnL realizado del día de trading actual (suma de cierres desde SOD). */
+  netDailyPnl?: number | null;
   capabilities: BrokerCapabilities;
 }
 
@@ -66,6 +79,51 @@ export interface TradingPosition {
   takeProfit: number | null;
   profitLoss: number;
   openedAt: string | null;
+  comment?: string | null;
+  magic?: number | null;
+}
+
+/** Trade cerrado (historial de la cuenta), de synced_trades status='filled'. */
+export interface TradingHistoryItem {
+  id: string;
+  tradingAccountId: string;
+  provider: BrokerProviderKey;
+  symbol: string;
+  side: TradingOrderSide;
+  volume: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  /** SL/TP con los que se abrió el trade (para dibujar la caja LONG/SHORT en el
+   * chart). Guardados en synced_trades; null si el trade cerró sin registrarlos. */
+  stopLoss: number | null;
+  takeProfit: number | null;
+  profitLoss: number | null;
+  openedAt: string | null;
+  closedAt: string | null;
+}
+
+/** Clase de una orden pendiente (working order): a qué precio dispara. */
+export type TradingOrderKind = 'limit' | 'stop' | 'stop_limit' | 'other';
+
+/**
+ * Orden PENDIENTE (working order) — colocada pero aún NO ejecutada. Distinta de
+ * TradingPosition (ya en mercado) y de TradingHistoryItem (ya cerrada). Kai opera
+ * a mercado, así que normalmente sólo aparecen aquí las que un usuario dejó
+ * pendientes a mano.
+ */
+export interface TradingOrder {
+  id: string;
+  tradingAccountId: string;
+  provider: BrokerProviderKey;
+  symbol: string;
+  side: TradingOrderSide;
+  type: TradingOrderKind;
+  volume: number;
+  /** Precio de disparo/límite de la orden. */
+  price: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  placedAt: string | null;
   comment?: string | null;
   magic?: number | null;
 }
