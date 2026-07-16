@@ -251,36 +251,85 @@ export class QueryService {
     limit = 100,
   ): Promise<TradingHistoryItem[]> {
     const account = await this.getOwnedAccountContext(userId, tradingAccountId);
+    // NOTA (Rithmic / futuros reales): NO hay historial de cerrados POR CUENTA.
+    // Los trading_signals/signal_outcomes son a nivel ESTRATEGIA (user-scoped) y se
+    // ejecutan en VARIAS cuentas (SIM + Apex real); no existe un tag cuenta↔outcome
+    // fiable (synced_trades vacío para rithmic, order_idempotency vacío, y solo
+    // algunas ejecuciones dejan notificación con signal_id). Leer signals+outcomes
+    // aquí mostraba los 25 trades de la ESTRATEGIA en el chart de UNA cuenta →
+    // incorrecto. Hasta que exista un registro de fills por-cuenta para rithmic,
+    // rithmic cae al query de synced_trades (vacío → []): sin cajas de cerrados.
     const rows = await this.prisma.syncedTrade.findMany({
       where: { accountId: account.id, status: 'filled' },
       orderBy: { closedAt: 'desc' },
       take: Math.min(Math.max(limit, 1), 500),
     });
-    return rows.map((row) => ({
-      id: row.id,
-      tradingAccountId: account.id,
-      provider: account.provider,
-      symbol: row.symbol,
-      side:
-        String(row.side).toUpperCase() === 'LONG'
-          ? ('buy' as const)
-          : ('sell' as const),
-      volume: Number(row.qty),
-      entryPrice: Number(row.price),
-      exitPrice: this.deriveExitPrice(
-        account.provider,
-        row.symbol,
-        String(row.side).toUpperCase() === 'LONG',
-        Number(row.price),
-        Number(row.qty),
-        row.pnl == null ? null : Number(row.pnl),
-      ),
-      stopLoss: row.sl == null ? null : Number(row.sl),
-      takeProfit: row.tp == null ? null : Number(row.tp),
-      profitLoss: row.pnl == null ? null : Number(row.pnl),
-      openedAt: row.openedAt ? row.openedAt.toISOString() : null,
-      closedAt: row.closedAt ? row.closedAt.toISOString() : null,
-    }));
+    return rows.map((row) => {
+      // El sync guarda metadata del cierre en el comment como
+      // `KAI_META:{entryPrice, closePrice, reason, closeSource, ...}` (misma
+      // fuente que usa la vista Orders del frontend principal vía
+      // /api/journal/history). Cuando existe, el closePrice REAL del broker
+      // manda sobre el exitPrice derivado del PnL.
+      const meta = this.parseKaiMeta(row.comment);
+      const entryPrice =
+        meta?.entryPrice != null && Number.isFinite(Number(meta.entryPrice))
+          ? Number(meta.entryPrice)
+          : Number(row.price);
+      const metaClosePrice =
+        meta?.closePrice != null && Number.isFinite(Number(meta.closePrice))
+          ? Number(meta.closePrice)
+          : null;
+      return {
+        id: row.id,
+        // Ticket del broker (columna ID en la tabla EJECUTADAS del terminal y
+        // referencia para reportes de trades). BigInt → string por JSON.
+        ticket: row.ticket != null ? String(row.ticket) : null,
+        tradingAccountId: account.id,
+        provider: account.provider,
+        symbol: row.symbol,
+        side:
+          String(row.side).toUpperCase() === 'LONG'
+            ? ('buy' as const)
+            : ('sell' as const),
+        volume: Number(row.qty),
+        entryPrice,
+        exitPrice:
+          metaClosePrice ??
+          this.deriveExitPrice(
+            account.provider,
+            row.symbol,
+            String(row.side).toUpperCase() === 'LONG',
+            Number(row.price),
+            Number(row.qty),
+            row.pnl == null ? null : Number(row.pnl),
+          ),
+        stopLoss: row.sl == null ? null : Number(row.sl),
+        takeProfit: row.tp == null ? null : Number(row.tp),
+        profitLoss: row.pnl == null ? null : Number(row.pnl),
+        openedAt: row.openedAt ? row.openedAt.toISOString() : null,
+        closedAt: row.closedAt ? row.closedAt.toISOString() : null,
+        closeSource: meta?.closeSource != null ? String(meta.closeSource) : null,
+        closeReason: meta?.reason != null ? String(meta.reason) : null,
+      };
+    });
+  }
+
+  /** Parsea el JSON de un comment `KAI_META:{...}`; null si no aplica o está roto. */
+  private parseKaiMeta(comment: string | null): {
+    entryPrice?: unknown;
+    closePrice?: unknown;
+    reason?: unknown;
+    closeSource?: unknown;
+  } | null {
+    if (!comment || !comment.startsWith('KAI_META:')) return null;
+    try {
+      const parsed: unknown = JSON.parse(comment.substring(9));
+      return parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
