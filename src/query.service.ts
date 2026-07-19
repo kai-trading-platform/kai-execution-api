@@ -12,6 +12,7 @@ import type {
   BrokerProviderKey,
   ConnectedTradingAccount,
   TradingAccountContext,
+  PartialExit,
   TradingHistoryItem,
   TradingOrder,
   TradingPosition,
@@ -75,6 +76,12 @@ export class QueryService {
     const dayStart = tradingDayStart(Date.now());
     const dailyPnlById = await this.getDailyRealizedPnlMap(userId, dayStart);
 
+    // Cuentas quemadas (challenge 'failed'): el terminal las muestra en modo
+    // solo-lectura (badge "Quemada", panel de órdenes deshabilitado).
+    const burnedIds = await this.getBurnedAccountIds(
+      accounts.map((account: any) => String(account.id)),
+    );
+
     return accounts.map((account: any) => {
       const connected = this.toConnectedAccount(
         this.toTradingAccountContext(
@@ -89,6 +96,12 @@ export class QueryService {
         netDailyPnl: netDaily,
         sodBalance:
           connected.balance == null ? null : connected.balance - netDaily,
+        // Quemada = challenge 'failed' Y sin conexión. Una cuenta con challenge
+        // fallido pero AÚN conectada (p.ej. sim reseteable) sigue operable y
+        // no debe mostrarse como quemada.
+        blown:
+          burnedIds.has(String(account.id)) &&
+          connected.status.toLowerCase() !== 'connected',
       };
     });
   }
@@ -108,6 +121,51 @@ export class QueryService {
         .filter((r) => r.accountId != null)
         .map((r) => [String(r.accountId), Number(r._sum.pnl ?? 0)]),
     );
+  }
+
+  /**
+   * ¿El challenge MÁS RECIENTE de la cuenta está 'failed' (cuenta QUEMADA: la
+   * prop firm la retiró)? Espejo de execution.service#isChallengeBurned:
+   * $queryRaw porque prop_challenges es dominio de kai-backend (BD compartida).
+   * Ante error responde false (se conserva el comportamiento previo).
+   */
+  private async isChallengeBurned(accountId: string): Promise<boolean> {
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ status: string }>>`
+        SELECT status FROM prop_challenges
+        WHERE mt5_account_id = ${accountId}::uuid
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1`;
+      return String(rows[0]?.status ?? '').toLowerCase() === 'failed';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Set de cuentas quemadas (último challenge 'failed') para un lote de ids.
+   * Una sola query para el listado de cuentas del terminal.
+   */
+  private async getBurnedAccountIds(
+    accountIds: string[],
+  ): Promise<Set<string>> {
+    if (accountIds.length === 0) return new Set();
+    try {
+      const rows = await this.prisma.$queryRaw<
+        Array<{ mt5_account_id: string; status: string }>
+      >`
+        SELECT DISTINCT ON (mt5_account_id) mt5_account_id::text, status
+        FROM prop_challenges
+        WHERE mt5_account_id::text = ANY(${accountIds})
+        ORDER BY mt5_account_id, updated_at DESC NULLS LAST`;
+      return new Set(
+        rows
+          .filter((row) => String(row.status ?? '').toLowerCase() === 'failed')
+          .map((row) => String(row.mt5_account_id)),
+      );
+    } catch {
+      return new Set();
+    }
   }
 
   private async getProviderMap(
@@ -203,6 +261,15 @@ export class QueryService {
         `Provider ${account.provider} does not support listing positions`,
       );
     }
+    // Cuenta QUEMADA sin conexión: la prop firm ya la retiró; no hay provider
+    // que consultar y reintentar solo produce 503s + reconexiones inútiles del
+    // bridge. Posiciones abiertas = [] es la lectura correcta (solo lectura).
+    if (
+      account.status.toLowerCase() !== 'connected' &&
+      (await this.isChallengeBurned(account.id))
+    ) {
+      return [];
+    }
     try {
       return await adapter.listPositions(account);
     } catch (error) {
@@ -228,6 +295,13 @@ export class QueryService {
     if (!this.brokerRegistry.has(account.provider)) return [];
     const adapter = this.brokerRegistry.get(account.provider);
     if (!adapter.supports('list_orders') || !adapter.listOrders) return [];
+    // Misma regla que listPositions: cuenta quemada sin conexión → [] (no 503).
+    if (
+      account.status.toLowerCase() !== 'connected' &&
+      (await this.isChallengeBurned(account.id))
+    ) {
+      return [];
+    }
     try {
       return await adapter.listOrders(account);
     } catch (error) {
@@ -310,6 +384,13 @@ export class QueryService {
         closedAt: row.closedAt ? row.closedAt.toISOString() : null,
         closeSource: meta?.closeSource != null ? String(meta.closeSource) : null,
         closeReason: meta?.reason != null ? String(meta.reason) : null,
+        // Salidas parciales (scale-out): solo si hay MÁS de un tramo (igual que el
+        // Journal del app principal). La tabla EJECUTADAS del terminal las despliega.
+        partials:
+          Array.isArray(meta?.partials) &&
+          (meta!.partials as unknown[]).length > 1
+            ? (meta!.partials as PartialExit[])
+            : null,
       };
     });
   }
@@ -320,6 +401,7 @@ export class QueryService {
     closePrice?: unknown;
     reason?: unknown;
     closeSource?: unknown;
+    partials?: unknown;
   } | null {
     if (!comment || !comment.startsWith('KAI_META:')) return null;
     try {

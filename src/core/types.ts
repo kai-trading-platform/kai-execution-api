@@ -63,6 +63,12 @@ export interface ConnectedTradingAccount {
   sodBalance?: number | null;
   /** PnL realizado del día de trading actual (suma de cierres desde SOD). */
   netDailyPnl?: number | null;
+  /**
+   * Cuenta QUEMADA: su challenge de fondeo más reciente está 'failed' (la prop
+   * firm retiró la cuenta). Solo lectura: historial y chart visibles, balance
+   * congelado en su último valor, acciones de trading deshabilitadas.
+   */
+  blown?: boolean;
   capabilities: BrokerCapabilities;
 }
 
@@ -84,8 +90,19 @@ export interface TradingPosition {
 }
 
 /** Trade cerrado (historial de la cuenta), de synced_trades status='filled'. */
+/** Una salida PARCIAL de un trade que cerró en tramos (scale-out / multi-TP).
+ * Viene del `KAI_META.partials` del comment de synced_trades. */
+export interface PartialExit {
+  price: number;
+  qty: number;
+  pnl: number;
+  at: string;
+}
+
 export interface TradingHistoryItem {
   id: string;
+  /** Ticket del broker (BigInt serializado como string); null si no aplica. */
+  ticket: string | null;
   tradingAccountId: string;
   provider: BrokerProviderKey;
   symbol: string;
@@ -100,6 +117,14 @@ export interface TradingHistoryItem {
   profitLoss: number | null;
   openedAt: string | null;
   closedAt: string | null;
+  /** Origen del cierre según KAI_META del comment (p.ej. 'manual_kai',
+   * 'manual_mt5', 'rithmic'); null si el trade no trae metadata. */
+  closeSource: string | null;
+  /** Razón del cierre (KAI_META reason, p.ej. 'TP'/'SL'/'DEAL_REASON_CLIENT'). */
+  closeReason: string | null;
+  /** Salidas parciales (scale-out / multi-TP) desde KAI_META; null si cerró de una.
+   * Solo se puebla cuando hay MÁS de un tramo. */
+  partials: PartialExit[] | null;
 }
 
 /** Clase de una orden pendiente (working order): a qué precio dispara. */
