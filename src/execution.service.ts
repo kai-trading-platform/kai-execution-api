@@ -65,6 +65,24 @@ export class ExecutionService {
     }
   }
 
+  /**
+   * ¿El challenge de fondeo de la cuenta está QUEMADO (status 'failed')? Se lee
+   * por $queryRaw porque prop_challenges pertenece al dominio de kai-backend (BD
+   * compartida). Ante cualquier error NO bloquea (el riskGuard sigue mandando).
+   */
+  private async isChallengeBurned(accountId: string): Promise<boolean> {
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ status: string }>>`
+        SELECT status FROM prop_challenges
+        WHERE mt5_account_id = ${accountId}::uuid
+        ORDER BY updated_at DESC NULLS LAST
+        LIMIT 1`;
+      return String(rows[0]?.status ?? '').toLowerCase() === 'failed';
+    } catch {
+      return false;
+    }
+  }
+
   async placeOrder(
     userId: string,
     payload: unknown,
@@ -93,6 +111,15 @@ export class ExecutionService {
     if (!adapter.supports('place_market_order')) {
       throw new ForbiddenException(
         `Provider ${account.provider} does not support market orders`,
+      );
+    }
+
+    // Cuenta de fondeo QUEMADA (challenge 'failed'): rechazar la APERTURA con un
+    // mensaje CLARO en vez del genérico "servicio no disponible" — así el usuario
+    // sabe exactamente por qué no puede operar. Cerrar/flatten sí se permite.
+    if (await this.isChallengeBurned(account.id)) {
+      throw new ConflictException(
+        'La cuenta está desactivada: alcanzó el límite de pérdida permitido. No se pueden abrir nuevas posiciones.',
       );
     }
 
